@@ -4,7 +4,7 @@
 
 Initial target: exported PTDL_v2 JSON, not Pterodactyl/Wings implementation reuse. Source format handling must cover metadata, selected runtime images, startup templates, variables/rules, installer image/script/entrypoint, configuration transforms, readiness and stop strategy. Store immutable revisions.
 
-Candidate official fixtures: Paper Java and Minecraft Bedrock. Download and pin exact JSON/source revision plus license before implementation tests. Their runtime behavior is **not yet qualified**. Unsupported transforms, validation rules, inherited settings or host dependencies must prevent a runnable import, not disappear silently.
+Pinned official fixtures: Paper Java and Minecraft Bedrock at revision `be654a201bf3b90446569167d4864edec1b33009`. Exact JSON hashes and MIT license are in `tests/fixtures/eggs/`. Their schema/variable parsing is covered by passing local tests; runtime behavior is **not yet qualified**. Unsupported transforms, validation rules, inherited settings or host dependencies must prevent a runnable import, not disappear silently.
 
 Existing upstream images are approved. Image pinning and entrypoint/environment conventions require tests; matching an image name is not compatibility evidence. No game image was downloaded or run during host discovery.
 
@@ -29,4 +29,4 @@ Sources: [API overview](https://docs.modrinth.com/api/), [search](https://docs.m
 
 ## Current qualification result
 
-Discovery is sufficient to identify deployment blockers and begin pure application work. Supported egg matrix, hard quota enforcement, TLS trust and friend-peer HTTPS access require staging evidence before release. No promise of universal egg compatibility or all-distribution support.
+Discovery is sufficient to identify deployment blockers and begin pure application work. Paper and Bedrock imports parse, but the runtime egg matrix, hard quota enforcement, TLS trust and friend-peer HTTPS access still require staging evidence before release. No promise of universal egg compatibility or all-distribution support.

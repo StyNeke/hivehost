@@ -148,6 +148,8 @@ Use UUIDs for user/server/egg/job identifiers and integer bytes for storage/RAM.
 
 ## Task 8: Accessible dashboard, creation, and server workspace
 
+UI direction added by the user during implementation: Codex-inspired dark workspace/sidebar, subtle borders, compact controls, and restrained typography. Use the user's PC for browser testing; keep tests isolated from the existing Pterodactyl panel. This requirement applies to login, library, dashboard and all server-management views.
+
 **Files:** Create `web/package.json`, lockfile, TypeScript/Vite config, `web/src/{App.svelte,api.ts,app.css}`, pages `Login.svelte`, `Dashboard.svelte`, `CreateServer.svelte`, `Server.svelte`, `Library.svelte`, `Admin.svelte`; create `web/tests/access.test.ts`, `crates/agent/src/files.rs`, `crates/agent/tests/files.rs`.
 
 **Interfaces:** Browser consumes only `/api` routes above. File routes under `/api/servers/{id}/files` expose relative paths with list/read/upload/download/rename/delete/create operations; text edits accept a version/hash for conflict detection. Agent uses directory-relative no-follow operations rather than string prefix checks.

@@ -2,7 +2,7 @@
 
 Work in progress: a new Rust-based manager for one private Linux host. See the [approved design](docs/superpowers/specs/2026-10-27-game-server-manager-design.md) and [implementation plan](docs/superpowers/plans/2026-10-27-game-server-manager.md).
 
-Implemented so far: durable SQLite job leases/recovery, core permissions/resource/retention rules, invite-only account storage, and authentication HTTP endpoints. The browser interface, egg runner and host agent are not ready. This is not yet a usable game-server panel.
+Implemented so far: durable SQLite job leases/recovery, core permissions/resource/retention rules, invite-only accounts and authentication HTTP endpoints, shared immutable egg imports, and a Linux agent health protocol protected by Unix peer credentials. The browser interface and game runner are not ready. This is not yet a usable game-server panel.
 
 ## Local development
 
@@ -33,3 +33,5 @@ cargo run -p manager-api
 API routes: `POST /api/login`, `/api/logout`, `/api/register`, `/api/invites` (admin), and `GET /api/session`. Mutating browser requests require an exact matching Origin header. JSON credentials use `username` and `password`; registration also takes `invite`. Invitations expire in 24 hours, sessions in seven days. Initial usernames are 3–32 ASCII letters/digits/underscores/hyphens, passwords 12–1024 bytes. Login/registration share a bounded process-wide attempt budget (10/minute) and password work is limited to four concurrent tasks.
 
 Deployment remains blocked on [legacy resource reservations and storage quota qualification](docs/operations/storage-and-network.md). Existing host services have not been changed. Linux-only host behavior still requires Linux acceptance tests.
+
+The current Rust foundation passed [Linux container validation](docs/operations/linux-validation.md). Game control and recovery still require their own acceptance checks. The approved visual direction is a Codex-inspired dark sidebar/workspace, with browser testing on the user's PC.

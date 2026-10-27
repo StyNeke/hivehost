@@ -25,6 +25,7 @@ The first release includes all features below, delivered incrementally rather th
 
 ### Dashboard and server creation
 
+- UI direction confirmed by the user: resemble Codex, using its dark workspace/sidebar layout, restrained borders, compact controls and typography. Adapt navigation to game servers and management pages, without implying OpenAI affiliation. Browser testing on the user's PC is explicitly allowed.
 - Main dashboard lists existing servers with an Add server action.
 - Creation offers the shared egg library and Minecraft installation choices.
 - Everyone may import eggs into the shared library and use them without administrator approval.
