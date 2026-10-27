@@ -30,6 +30,18 @@ pub struct HostAdmission {
     pub unavailable_bindings: Vec<PortBinding>,
 }
 
+pub const MAX_SNAPSHOT_AGE_SECS: i64 = 30;
+
+impl HostAdmission {
+    // Future timestamps are as untrustworthy as old ones: both mean clocks or data are wrong.
+    pub fn is_fresh(&self, now: i64) -> bool {
+        self.measured_at >= 0
+            && now
+                .checked_sub(self.measured_at)
+                .is_some_and(|age| (0..=MAX_SNAPSHOT_AGE_SECS).contains(&age))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostHardware {
     pub cpu_millis: u32,

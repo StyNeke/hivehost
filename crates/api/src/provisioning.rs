@@ -244,11 +244,7 @@ impl ProvisioningStore {
 }
 
 fn fresh_snapshot(host: &HostAdmission, now: i64) -> Result<(), ProvisioningError> {
-    if host.measured_at < 0
-        || now
-            .checked_sub(host.measured_at)
-            .is_none_or(|age| !(0..=30).contains(&age))
-    {
+    if !host.is_fresh(now) {
         return Err(ProvisioningError::HostNotReady(
             "host snapshot is stale or invalid",
         ));
