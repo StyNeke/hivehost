@@ -1,6 +1,8 @@
 # Project progression and continuation handoff
 
-Last updated: 2026-10-27 (Europe/Berlin).
+Last updated: 2026-10-27 (Europe/Amsterdam).
+
+**Active work continues.** The user clarified that this is a continuously maintained progress record, not a request to stop or hand off now. Update it after verified milestones and keep implementing the approved plan; do not end work merely because this document has been updated.
 
 ## Read this first
 
@@ -60,7 +62,7 @@ Legend: **built** = implemented and tested for the listed scope; **partial** = o
 | 2. Foundation | Built for current operations | UUID models, durable SQLite leases, exclusive job claiming, renewal, stale-worker fencing, recovery with same operation ID; typed bounded RPC; Linux UID/socket checks | Host-action idempotency/checkpoints when mutating Docker operations are added; remaining schema with owning features; API-to-agent integration |
 | 3. Accounts and permissions | Partial, substantial | Bootstrap admin CLI, Argon2id hashes, single-use expiring invites, sessions/logout, origin checks/cookies/throttling; persisted owner/member authorization and dashboard/detail separation | Ownership transfer/account lifecycle, complete endpoint coverage, stream revocation once streams exist, full audit integration |
 | 4. Shared egg library | Partial, substantial | Pinned real Java/Bedrock fixtures; strict parser and variable checks; shared HTTP import/list/details; immutable revisions, original JSON/hash retained; importer/admin edit rules | More rule/parser adapters, unused-revision deletion and server revision FK integration, runtime qualification, script/image execution |
-| 5. Capacity/allocations | Partial | Pure checked CPU/RAM/disk admission rules and tests; safe host capacity proposal | Transactional real reservations, host presets, quota enforcement, IP/port pools/conflicts, creation admission and limit changes |
+| 5. Capacity/allocations | Partial; transaction layer built | Checked CPU/RAM/disk rules; atomic server/owner/reservation/port/install-job creation; pinned egg revision and validated settings; admin-only private-IP allocation pool; stale/unqualified host rejection; race/rollback tests | Connect trusted agent snapshots to HTTP creation, host presets, actual quota enforcement, allocation edits and limit changes |
 | 6. First Java game | Pending | No Docker game operations | Installer/runtime isolation, image digest pinning, game license acceptance, installation, start/readiness, operation journal, first real game |
 | 7. Console/lifecycle/metrics | Pending | Transport boundary only; resource usage explicitly unknown | Live console/logs/commands, actual metrics, state reconciliation, crash limits, boot restoration, graceful game/host shutdown and systemd ordering |
 | 8. Browser UI | Partial | Codex-style login/invite registration, sidebar, server list/access presentation, shared library import/details, admin invite page; UI tests/type checks/build | Real-browser QA, mobile inspection, production static serving/private TLS, real creation/settings/console/files/other feature views |
@@ -84,9 +86,11 @@ Legend: **built** = implemented and tested for the listed scope; **partial** = o
 | `crates/api/src/auth.rs` | Accounts, Argon2id, hashed invites/sessions, session authentication |
 | `crates/api/src/eggs.rs` | Shared library store, immutable revisions/original JSON/SHA256 |
 | `crates/api/src/servers.rs` | Metadata list/detail authorization and member toggles; no provisioning |
+| `crates/api/src/provisioning.rs` | Atomic creation/reservations/allocation pool against trusted host state; not yet connected to browser creation |
+| `crates/api/src/database.rs` | Shared atomic schema initialization, foreign keys, busy timeout and schema-version downgrade protection |
 | `crates/api/src/http.rs` | Authenticated API routes, origin/cookie/body/worker limits, library/server handlers |
 | `crates/api/src/main.rs`, `config.rs` | Local CLI/bootstrap/startup validation; fixed loopback listener behind expected HTTPS origin |
-| `crates/api/migrations/0001_jobs.sql` through `0004_servers.sql` | Current feature-owned schema; no complete deployment/migration engine yet |
+| `crates/api/migrations/0001_jobs.sql` through `0005_admission.sql` | Current feature-owned schema, including resource reservations, pinned provisioning records and port pool |
 | `crates/protocol/src/lib.rs` | Version 1 request/response, 64 KiB frames, currently Ping only |
 | `crates/agent/src/rpc.rs`, `linux.rs`, `main.rs` | Protocol, 5-second request bound, peer UID, owned non-writable socket parent, mode 0660, bounded listener; Linux agent has no Docker commands |
 | `web/src/App.svelte`, `app.css`, `components/Icon.svelte` | Initial Codex-style responsive UI; no copied OpenAI assets |
@@ -108,6 +112,17 @@ All implemented non-trivial slices were developed with failing tests first, then
 - Login/registration share a bounded process-wide budget of 10 attempts/minute; four concurrent blocking auth/database workers. This deliberately simple small-team limit may need per-peer refinement later.
 - API body limit 16 KiB; egg upload routes allow 1 MiB. Unknown egg fields/semantics fail closed; current supported rule/parser subset is intentionally limited.
 - CLI API binds loopback only; `GM_ORIGIN` must be a bare HTTPS origin. Frontend dev HTTP alone does not establish working secure-cookie browser authentication. Do not weaken cookie/TLS checks to make a preview appear complete.
+
+## Latest verified milestone — active implementation
+
+After the user clarified continuous work, implementation continued beyond the first handoff checkpoint:
+
+- All stores now use one schema-versioned database initializer. Initialization is transactional, concurrent first connections are tested, existing accounts survive migration, and unknown newer schema versions fail closed.
+- The creation transaction now validates the pinned egg/image/editable variables and required license acceptance, validates an available private-IP/transport/port allocation, totals all existing reservations plus legacy reservations, and commits server ownership, resource reservation, allocation claim and install job atomically.
+- Concurrent creation tests prove only one request succeeds when two would exceed the budget. Stale snapshots, missing disk qualification, unqualified runtimes, invalid settings, foreign/public IPs and used ports are rejected. There are no production readiness overrides from browser input.
+- Host snapshots must be no older than 30 seconds. Live socket/port and disk enforcement still require agent-side rechecks; database success alone is not a successful game install.
+- **Current Windows Rust suite: 30 tests passed**; formatting and Clippy checks passed. The 2 existing frontend tests/build remain the previous verified UI snapshot, unchanged by this backend milestone. Current Linux integration has not yet been rerun.
+- Next work is trusted agent host-status integration and the Docker game runner. Browser `POST /api/servers` remains gated until that trusted path is connected; no fake successful creation was added.
 
 ## Host facts and blockers
 

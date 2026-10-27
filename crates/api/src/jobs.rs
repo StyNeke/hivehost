@@ -1,6 +1,6 @@
 use manager_core::model::{JobId, JobKind};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use std::{path::Path, time::Duration};
+use std::path::Path;
 use uuid::Uuid;
 
 pub struct JobStore(Connection);
@@ -29,11 +29,7 @@ impl JobStore {
         Ok(changed == 1)
     }
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
-        let connection = Connection::open(path)?;
-        connection.busy_timeout(Duration::from_secs(5))?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.execute_batch(include_str!("../migrations/0001_jobs.sql"))?;
-        Ok(Self(connection))
+        Ok(Self(crate::database::open(path)?))
     }
 
     pub fn enqueue(&mut self, kind: JobKind) -> rusqlite::Result<JobId> {

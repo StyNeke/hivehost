@@ -4,7 +4,7 @@ use manager_core::{
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
-use std::{path::Path, time::Duration};
+use std::path::Path;
 use uuid::Uuid;
 
 pub struct ServerStore(Connection);
@@ -43,11 +43,7 @@ pub enum ServerError {
 
 impl ServerStore {
     pub fn open(path: &Path) -> Result<Self, ServerError> {
-        let connection = Connection::open(path)?;
-        connection.busy_timeout(Duration::from_secs(5))?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.execute_batch(include_str!("../migrations/0004_servers.sql"))?;
-        Ok(Self(connection))
+        Ok(Self(crate::database::open(path)?))
     }
 
     pub fn list(&self, actor: UserId) -> Result<Vec<ServerSummary>, ServerError> {

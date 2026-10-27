@@ -5,7 +5,7 @@ use manager_core::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{path::Path, time::Duration};
+use std::path::Path;
 use uuid::Uuid;
 
 pub struct EggStore(Connection);
@@ -40,11 +40,7 @@ pub struct StoredRevision {
 
 impl EggStore {
     pub fn open(path: &Path) -> Result<Self, LibraryError> {
-        let connection = Connection::open(path)?;
-        connection.busy_timeout(Duration::from_secs(5))?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.execute_batch(include_str!("../migrations/0003_eggs.sql"))?;
-        Ok(Self(connection))
+        Ok(Self(crate::database::open(path)?))
     }
 
     pub fn import(&mut self, actor: UserId, raw: &[u8]) -> Result<EggSummary, LibraryError> {

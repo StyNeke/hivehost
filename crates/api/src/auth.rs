@@ -2,7 +2,7 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_ha
 use manager_core::model::{User, UserId};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
-use std::{path::Path, time::Duration};
+use std::path::Path;
 use uuid::Uuid;
 
 pub struct AuthStore(Connection);
@@ -27,11 +27,7 @@ pub enum AuthError {
 
 impl AuthStore {
     pub fn open(path: &Path) -> Result<Self, AuthError> {
-        let connection = Connection::open(path)?;
-        connection.busy_timeout(Duration::from_secs(5))?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.execute_batch(include_str!("../migrations/0002_auth.sql"))?;
-        Ok(Self(connection))
+        Ok(Self(crate::database::open(path)?))
     }
 
     pub fn bootstrap_admin(&mut self, username: &str, password: &str) -> Result<User, AuthError> {
