@@ -1,0 +1,8 @@
+/target/
+/web/node_modules/
+/web/dist/
+/.superpowers/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env
