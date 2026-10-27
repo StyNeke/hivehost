@@ -1,8 +1,8 @@
 # Linux game server manager
 
-Work in progress: a new Rust-based manager for one private Linux host. See the [approved design](docs/superpowers/specs/2026-10-27-game-server-manager-design.md) and [implementation plan](docs/superpowers/plans/2026-10-27-game-server-manager.md).
+Work in progress: a new Rust-based manager for one private Linux host. Start with [progression.md](progression.md), then the [approved design](design.md) and [implementation plan](implementation-plan.md). All three handoff documents live together in this root folder.
 
-Implemented so far: durable SQLite job leases/recovery, core permissions/resource/retention rules, invite-only accounts and authentication HTTP endpoints, shared immutable egg imports, and a Linux agent health protocol protected by Unix peer credentials. The browser interface and game runner are not ready. This is not yet a usable game-server panel.
+Implemented so far: durable SQLite job leases/recovery, core permissions/resource/retention rules, invite-only accounts and authentication HTTP endpoints, shared immutable egg imports, a Linux agent health protocol protected by Unix peer credentials, server metadata/membership checks, and an initial Codex-style Svelte interface. The game runner is not implemented and real-browser end-to-end QA is pending. This is not yet a usable game-server panel.
 
 ## Local development
 

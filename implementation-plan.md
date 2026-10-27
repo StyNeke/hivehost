@@ -1,6 +1,6 @@
 # Linux Game Server Manager Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Execution method is pending the user's choice.
+> **For agentic workers:** The user selected native implementation in this chat. Codex workers use superpowers:executing-plans; other agents can follow the same task/test sequence without those skills. Steps use checkbox (`- [ ]`) syntax for tracking. Read progression.md first for actual completion status; the original checklist below is not the progress ledger.
 
 **Goal:** Deliver the approved private, single-host game manager without disrupting existing Pterodactyl or CasaOS services.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, Axum, Tokio, SQLite, Svelte, TypeScript, Docker, systemd; choose supported dependency versions and commit lockfiles at implementation time.
 
-**Spec:** `docs/superpowers/specs/2026-10-27-game-server-manager-design.md` (approved 2026-10-27).
+**Spec:** [design.md](design.md) (approved 2026-10-27). Current status and continuation instructions: [progression.md](progression.md).
 
 ## Global Constraints
 

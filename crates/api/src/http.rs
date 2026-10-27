@@ -1,5 +1,6 @@
 use crate::auth::{AuthError, AuthStore};
 use crate::eggs::{EggStore, EggSummary, LibraryError};
+use crate::servers::{ServerError, ServerRecord, ServerStore, ServerSummary};
 use axum::{
     Json, Router,
     body::Bytes,
@@ -11,7 +12,7 @@ use axum::{
 };
 use manager_core::{
     eggs::CompatibilityIssue,
-    model::{EggRevisionId, UserId},
+    model::{EggRevisionId, ServerId, UserId},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -101,10 +102,32 @@ fn auth_error(err: AuthError) -> ApiError {
 }
 
 impl AppState {
+    async fn servers<T: Send + 'static>(
+        &self,
+        headers: &HeaderMap,
+        action: impl FnOnce(&mut ServerStore, UserId) -> Result<T, ServerError> + Send + 'static,
+    ) -> Result<T, ApiError> {
+        self.authenticated(headers, move |path, actor| {
+            action(&mut ServerStore::open(path).map_err(server_error)?, actor).map_err(server_error)
+        })
+        .await
+    }
+
     async fn library<T: Send + 'static>(
         &self,
         headers: &HeaderMap,
         action: impl FnOnce(&mut EggStore, UserId) -> Result<T, LibraryError> + Send + 'static,
+    ) -> Result<T, ApiError> {
+        self.authenticated(headers, move |path, actor| {
+            action(&mut EggStore::open(path).map_err(library_error)?, actor).map_err(library_error)
+        })
+        .await
+    }
+
+    async fn authenticated<T: Send + 'static>(
+        &self,
+        headers: &HeaderMap,
+        action: impl FnOnce(&std::path::Path, UserId) -> Result<T, ApiError> + Send + 'static,
     ) -> Result<T, ApiError> {
         let token = session_token(headers)?;
         let now = now()?;
@@ -121,8 +144,7 @@ impl AppState {
                 .authenticate(&token, now)
                 .map_err(auth_error)?
                 .ok_or_else(unauthorized)?;
-            action(&mut EggStore::open(&path).map_err(library_error)?, user.id)
-                .map_err(library_error)
+            action(&path, user.id)
         })
         .await
         .map_err(|_| storage_error())?
@@ -176,6 +198,12 @@ pub fn router(database: PathBuf, origin: String) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/invites", post(invite))
         .route("/api/session", get(session))
+        .route("/api/servers", get(list_servers).post(create_server))
+        .route("/api/servers/{id}", get(get_server))
+        .route(
+            "/api/servers/{id}/members/{user_id}",
+            axum::routing::put(set_member),
+        )
         .route(
             "/api/eggs",
             get(list_eggs)
@@ -415,4 +443,74 @@ async fn get_revision(
         })
         .await
         .map(Json)
+}
+
+fn server_error(err: ServerError) -> ApiError {
+    match err {
+        ServerError::NotFound => error(StatusCode::NOT_FOUND, "not_found", "Server not found"),
+        ServerError::Forbidden => error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "You do not have access to this server or action",
+        ),
+        _ => storage_error(),
+    }
+}
+
+async fn list_servers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ServerSummary>>, ApiError> {
+    state
+        .servers(&headers, |store, actor| store.list(actor))
+        .await
+        .map(Json)
+}
+
+async fn get_server(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<ServerRecord>, ApiError> {
+    state
+        .servers(&headers, move |store, actor| {
+            store.require_access(actor, ServerId(id))
+        })
+        .await
+        .map(Json)
+}
+
+#[derive(Deserialize)]
+struct MemberAccess {
+    enabled: bool,
+}
+
+async fn set_member(
+    State(state): State<AppState>,
+    Path((id, user_id)): Path<(Uuid, Uuid)>,
+    headers: HeaderMap,
+    Json(input): Json<MemberAccess>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .servers(&headers, move |store, actor| {
+            store.set_member(actor, ServerId(id), UserId(user_id), input.enabled)
+        })
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn create_server(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    // shortcut: fail closed until trusted agent capacity, quotas and runnable egg revisions are connected.
+    state
+        .authenticated(&headers, |_, _| {
+            Err(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "host_not_ready",
+                "Finish host resource limits and storage setup before creating servers",
+            ))
+        })
+        .await
 }
