@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api, ApiError } from './api';
   import Icon from './components/Icon.svelte';
+  import CreateServer from './pages/CreateServer.svelte';
 
   type Session = { id: string; is_admin: boolean };
   type Server = { id: string; name: string; can_access: boolean; usage: null | { cpu_percent: number; memory_bytes: number; disk_bytes: number } };
@@ -128,7 +129,7 @@
       {:else if page === 'servers'}
         <section class="page-content">
           <div class="page-heading"><div><div class="eyebrow">Your workspace</div><h1>Servers</h1><p>All your worlds. One place to manage them.</p></div><button class="primary" onclick={() => { createOpen = !createOpen; }}><Icon name="plus" size={16} /> Add server</button></div>
-          {#if createOpen}<section class="panel setup-panel"><div><h2>Prepare your host first</h2><p>Server creation is waiting for safe resource limits and storage setup. Your existing servers will stay as they are.</p></div><button class="secondary" onclick={() => navigate('library')}>Browse eggs <Icon name="arrow" size={15} /></button><button class="icon-button" aria-label="Close server setup" onclick={() => { createOpen = false; }}><Icon name="close" /></button></section>{/if}
+          {#if createOpen}<CreateServer {eggs} isAdmin={session.is_admin} onClose={() => { createOpen = false; }} onCreated={async (message) => { servers = await api<Server[]>('/api/servers'); createOpen = false; error = ''; notice = message; }} />{/if}
           <div class="list-toolbar"><label class="search-box"><Icon name="search" size={16} /><input aria-label="Search servers" placeholder="Search servers…" bind:value={query} /></label><span class="muted">{servers.length} {servers.length === 1 ? 'server' : 'servers'}</span></div>
           {#if !servers.length}
             <div class="empty-state"><div class="empty-icon"><Icon name="servers" size={25} /></div><h2>A home for your next world</h2><p>Your servers will appear here. Start by adding game definitions to the shared egg library.</p><button class="secondary" onclick={() => navigate('library')}>Open egg library <Icon name="arrow" size={15} /></button></div>
