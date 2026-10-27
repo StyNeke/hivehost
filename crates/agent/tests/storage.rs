@@ -3,7 +3,7 @@
 use manager_agent::{
     files::as_server,
     storage::{
-        Layout, create_volume, disk_budget, ensure_mounted, is_mount_point, mounted,
+        Layout, create_volume, disk_budget, ensure_mounted, is_mount_point, lock_instance, mounted,
         quota_tools_available, remove_volume, volume_usage,
     },
 };
@@ -88,4 +88,19 @@ async fn volume_is_a_hard_quota_owned_by_the_server_and_removable() {
     assert!(!mounted(&volume).unwrap());
     assert!(!layout.image(id).exists());
     assert!(!volume.exists());
+}
+
+#[test]
+fn only_one_agent_can_hold_a_data_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let layout = Layout {
+        data_root: dir.path().to_path_buf(),
+    };
+    let first = lock_instance(&layout).unwrap();
+    assert_eq!(
+        lock_instance(&layout).err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    drop(first);
+    assert!(lock_instance(&layout).is_ok());
 }

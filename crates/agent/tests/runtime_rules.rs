@@ -1,8 +1,8 @@
 #![cfg(target_os = "linux")]
 
 use manager_agent::runtime::{
-    ContainerPlan, environment, installer_args, parse_docker_time, runtime_args, server_memory_mib,
-    valid_command, valid_extension_name, valid_remote_file, validate_spec,
+    ContainerPlan, Egress, environment, installer_args, parse_docker_time, runtime_args,
+    server_memory_mib, valid_command, valid_extension_name, valid_remote_file, validate_spec,
 };
 use manager_core::{
     capacity::Resources,
@@ -69,11 +69,12 @@ fn game_containers_are_unprivileged_bounded_and_mount_only_their_volume() {
         image: "ghcr.io/ptero-eggs/yolks@sha256:abc",
         volume,
         network: "gm-games",
-        proxy: None,
+        egress: Egress::default(),
         stop_grace_secs: 120,
     };
     let args = strings(runtime_args(&plan));
     let joined = args.join(" ");
+    assert!(joined.contains("/tmp:rw,exec,nosuid,nodev"));
     for required in [
         "--user 200001:200001",
         "--cap-drop ALL",
@@ -123,13 +124,18 @@ fn game_containers_are_unprivileged_bounded_and_mount_only_their_volume() {
 #[test]
 fn installers_get_only_package_manager_capabilities_and_a_read_only_script() {
     let spec = spec();
+    let proxy = ("172.30.250.1".to_string(), 3128);
     let plan = ContainerPlan {
         spec: &spec,
         uid: 200001,
         image: "x",
         volume: Path::new("/v"),
         network: "gm-games",
-        proxy: Some(&("172.30.250.1".to_string(), 3128)),
+        egress: Egress {
+            proxy: Some(&proxy),
+            ca_file: Some(Path::new("/etc/proxy-ca.pem")),
+            java_truststore: Some(Path::new("/etc/proxy-cacerts")),
+        },
         stop_grace_secs: 120,
     };
     let args = strings(installer_args(&plan, Path::new("/s")));
@@ -155,7 +161,18 @@ fn installers_get_only_package_manager_capabilities_and_a_read_only_script() {
     );
     assert!(!joined.contains("--privileged") && !joined.contains("docker.sock"));
     assert!(args.contains(&"HTTPS_PROXY=http://172.30.250.1:3128".to_string()));
-    assert!(joined.contains("-Dhttps.proxyHost=172.30.250.1 -Dhttps.proxyPort=3128"));
+    assert!(joined.contains("-Dhttps.proxyHost=172.30.250.1 -Dhttps.proxyPort=3128 -Djavax.net.ssl.trustStore=/etc/game-manager/cacerts"));
+    assert!(
+        joined.contains(
+            "type=bind,source=/etc/proxy-ca.pem,target=/etc/game-manager/ca.pem,readonly"
+        )
+    );
+    assert!(
+        joined.contains(
+            "type=bind,source=/etc/proxy-cacerts,target=/etc/game-manager/cacerts,readonly"
+        )
+    );
+    assert!(args.contains(&"SSL_CERT_FILE=/etc/game-manager/ca.pem".to_string()));
     assert_eq!(
         &args[args.len() - 3..],
         [
@@ -226,10 +243,13 @@ fn specs_that_could_inject_arguments_or_escape_are_rejected() {
 
 #[test]
 fn environment_puts_agent_values_last_and_memory_leaves_headroom() {
-    let env = environment(&spec(), None);
+    let env = environment(&spec(), &Egress::default());
     assert!(env.contains(&("SERVER_PORT".to_string(), "25600".to_string())));
     assert!(env.contains(&("SERVER_IP".to_string(), "0.0.0.0".to_string())));
-    assert!(!env.iter().any(|(k, _)| k.contains("PROXY")));
+    assert!(
+        !env.iter()
+            .any(|(k, _)| k.contains("PROXY") || k == "JAVA_TOOL_OPTIONS" || k == "SSL_CERT_FILE")
+    );
     assert_eq!(server_memory_mib(4 * GIB), 3481);
     assert_eq!(server_memory_mib(512 * 1024 * 1024), 435);
     assert_eq!(server_memory_mib(32 * GIB), 31744);

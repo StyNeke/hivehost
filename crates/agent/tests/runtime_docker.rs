@@ -203,12 +203,19 @@ async fn a_server_installs_runs_restarts_stops_and_is_deleted_cleanly() {
         "start is idempotent"
     );
 
-    assert_eq!(
-        runtime.send_command(id, "hello world").await,
-        AgentResult::Accepted
-    );
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(console(&runtime, id).await.contains("cmd: hello world"));
+    // Several separate console connections must all reach the same, still-open stdin.
+    for command in ["hello world", "hello again", "third"] {
+        assert_eq!(
+            runtime.send_command(id, command).await,
+            AgentResult::Accepted
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let output = console(&runtime, id).await;
+    for expected in ["cmd: hello world", "cmd: hello again", "cmd: third"] {
+        assert!(output.contains(expected), "{expected} missing: {output}");
+    }
+    assert_eq!(status(&runtime, id).await.power, PowerState::Running);
     assert_eq!(
         rejected_code(runtime.send_command(id, "say a\nstop").await),
         "invalid_command"
@@ -232,7 +239,7 @@ async fn a_server_installs_runs_restarts_stops_and_is_deleted_cleanly() {
             .problem
             .as_deref()
             .unwrap()
-            .contains("restarting in 10 seconds"),
+            .contains("exit code 3); restarting in 10 seconds"),
         "{crashed:?}"
     );
     runtime.supervise_once().await;

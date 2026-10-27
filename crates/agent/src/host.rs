@@ -9,6 +9,9 @@ pub struct AgentConfig {
     pub uid_base: u32,
     // Optional HTTP(S) proxy for installer/game containers on hosts with filtered egress.
     pub container_proxy: Option<(String, u16)>,
+    // Optional PEM bundle and Java truststore for proxies that re-sign TLS, mounted read-only.
+    pub container_ca_file: Option<PathBuf>,
+    pub container_java_truststore: Option<PathBuf>,
     pub disk_reserve_bytes: u64,
     pub network_name: String,
     pub network_subnet: String,
@@ -23,6 +26,8 @@ impl Default for AgentConfig {
             private_ips: vec![],
             uid_base: 200_000,
             container_proxy: None,
+            container_ca_file: None,
+            container_java_truststore: None,
             disk_reserve_bytes: 10 * 1024 * 1024 * 1024,
             network_name: "gm-games".into(),
             network_subnet: "172.30.250.0/24".into(),

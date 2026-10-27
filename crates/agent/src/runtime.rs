@@ -154,7 +154,19 @@ pub fn server_memory_mib(limit_bytes: u64) -> u64 {
     (mib * 85 / 100).max(mib.saturating_sub(1024)).max(128)
 }
 
-pub fn environment(spec: &ServerSpec, proxy: Option<&(String, u16)>) -> Vec<(String, String)> {
+// Optional egress settings for hosts whose outbound traffic goes through a proxy, possibly one
+// that inspects TLS with its own CA. Trust material is mounted read-only; nothing is by default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Egress<'a> {
+    pub proxy: Option<&'a (String, u16)>,
+    pub ca_file: Option<&'a Path>,
+    pub java_truststore: Option<&'a Path>,
+}
+
+const CA_TARGET: &str = "/etc/game-manager/ca.pem";
+const TRUSTSTORE_TARGET: &str = "/etc/game-manager/cacerts";
+
+pub fn environment(spec: &ServerSpec, egress: &Egress) -> Vec<(String, String)> {
     let mut environment: Vec<(String, String)> = spec
         .variables
         .iter()
@@ -172,21 +184,50 @@ pub fn environment(spec: &ServerSpec, proxy: Option<&(String, u16)>) -> Vec<(Str
         ("HOME".into(), "/home/container".into()),
         ("TZ".into(), "UTC".into()),
     ]);
-    if let Some((host, port)) = proxy {
+    let mut java = Vec::new();
+    if let Some((host, port)) = egress.proxy {
         let url = format!("http://{host}:{port}");
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
             environment.push((name.into(), url.clone()));
         }
         environment.push(("NO_PROXY".into(), "localhost,127.0.0.1".into()));
         environment.push(("no_proxy".into(), "localhost,127.0.0.1".into()));
-        environment.push((
-            "JAVA_TOOL_OPTIONS".into(),
-            format!(
-                "-Dhttp.proxyHost={host} -Dhttp.proxyPort={port} -Dhttps.proxyHost={host} -Dhttps.proxyPort={port}"
-            ),
+        java.push(format!(
+            "-Dhttp.proxyHost={host} -Dhttp.proxyPort={port} -Dhttps.proxyHost={host} -Dhttps.proxyPort={port}"
         ));
     }
+    if egress.ca_file.is_some() {
+        for name in ["SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"] {
+            environment.push((name.into(), CA_TARGET.into()));
+        }
+    }
+    if egress.java_truststore.is_some() {
+        java.push(format!("-Djavax.net.ssl.trustStore={TRUSTSTORE_TARGET}"));
+    }
+    if !java.is_empty() {
+        environment.push(("JAVA_TOOL_OPTIONS".into(), java.join(" ")));
+    }
     environment
+}
+
+fn trust_mounts(egress: &Egress) -> Vec<OsString> {
+    let mut args = Vec::new();
+    for (source, target) in [
+        (egress.ca_file, CA_TARGET),
+        (egress.java_truststore, TRUSTSTORE_TARGET),
+    ] {
+        if let Some(source) = source {
+            args.push("--mount".into());
+            args.push(
+                format!(
+                    "type=bind,source={},target={target},readonly",
+                    source.display()
+                )
+                .into(),
+            );
+        }
+    }
+    args
 }
 
 fn cpus(millis: u32) -> String {
@@ -227,11 +268,11 @@ pub struct ContainerPlan<'a> {
     pub image: &'a str,
     pub volume: &'a Path,
     pub network: &'a str,
-    pub proxy: Option<&'a (String, u16)>,
+    pub egress: Egress<'a>,
     pub stop_grace_secs: u64,
 }
 
-// Arguments for `docker create` of the game container. Non-root, no capabilities, own volume only.
+// Arguments for `docker run --detach` of the game container. Non-root, no capabilities, own volume only.
 pub fn runtime_args(plan: &ContainerPlan) -> Vec<OsString> {
     let id = plan.spec.server_id;
     let binding = &plan.spec.binding;
@@ -244,7 +285,10 @@ pub fn runtime_args(plan: &ContainerPlan) -> Vec<OsString> {
         ip => ip.to_string(),
     };
     let mut args: Vec<OsString> = vec![
-        "create".into(),
+        // `run --detach` keeps StdinOnce=false; `create -i` would close stdin after the first
+        // console command disconnects.
+        "run".into(),
+        "--detach".into(),
         "--name".into(),
         runtime_name(id).into(),
         "--label".into(),
@@ -262,7 +306,7 @@ pub fn runtime_args(plan: &ContainerPlan) -> Vec<OsString> {
         "--interactive".into(),
         "--read-only".into(),
         "--tmpfs".into(),
-        "/tmp:rw,nosuid,nodev,size=268435456".into(),
+        "/tmp:rw,exec,nosuid,nodev,size=268435456".into(),
         "--stop-timeout".into(),
         plan.stop_grace_secs.to_string().into(),
         "--mount".into(),
@@ -275,7 +319,8 @@ pub fn runtime_args(plan: &ContainerPlan) -> Vec<OsString> {
         "/home/container".into(),
     ];
     args.extend(limit_args(&plan.spec.limits, 512));
-    args.extend(env_args(&environment(plan.spec, plan.proxy)));
+    args.extend(trust_mounts(&plan.egress));
+    args.extend(env_args(&environment(plan.spec, &plan.egress)));
     args.push("--".into());
     args.push(plan.image.into());
     args
@@ -328,7 +373,8 @@ pub fn installer_args(plan: &ContainerPlan, scripts: &Path) -> Vec<OsString> {
         plan.spec.installer.entrypoint.clone().into(),
     ]);
     args.extend(limit_args(&plan.spec.limits, 1024));
-    args.extend(env_args(&environment(plan.spec, plan.proxy)));
+    args.extend(trust_mounts(&plan.egress));
+    args.extend(env_args(&environment(plan.spec, &plan.egress)));
     args.push("--".into());
     args.push(plan.spec.installer.container.clone().into());
     args.push("/mnt/install/install.sh".into());
@@ -519,6 +565,14 @@ impl Runtime {
             .filter_map(|id| std::fs::metadata(self.layout.image(*id)).ok())
             .map(|meta| meta.len())
             .fold(0u64, u64::saturating_add)
+    }
+
+    fn egress(&self) -> Egress<'_> {
+        Egress {
+            proxy: self.config.container_proxy.as_ref(),
+            ca_file: self.config.container_ca_file.as_deref(),
+            java_truststore: self.config.container_java_truststore.as_deref(),
+        }
     }
 
     async fn docker(
@@ -767,7 +821,7 @@ impl Runtime {
             image: &pinned,
             volume: &volume,
             network: &self.config.network_name,
-            proxy: self.config.container_proxy.as_ref(),
+            egress: self.egress(),
             stop_grace_secs: self.config.stop_grace_secs,
         };
         let name = install_name(id);
@@ -977,22 +1031,14 @@ impl Runtime {
             image: &image,
             volume: &volume,
             network: &self.config.network_name,
-            proxy: self.config.container_proxy.as_ref(),
+            egress: self.egress(),
             stop_grace_secs: self.config.stop_grace_secs,
         };
-        self.docker(runtime_args(&plan), 120, 64 * 1024).await?;
         self.ready
             .lock()
             .map_err(|_| io::Error::other("lock poisoned"))?
             .remove(&id);
-        if let Err(error) = self
-            .docker(
-                vec!["start".into(), "--".into(), name.clone().into()],
-                120,
-                64 * 1024,
-            )
-            .await
-        {
+        if let Err(error) = self.docker(runtime_args(&plan), 120, 64 * 1024).await {
             let _ = self.remove_container(&name).await;
             let message = error.to_string();
             if message.contains("address already in use")

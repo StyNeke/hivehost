@@ -46,6 +46,32 @@ impl Layout {
     }
 }
 
+// Held for the agent's whole lifetime: two agents on one data root would race over containers,
+// mounts and the registry (for example a new agent starting while an old one is still stopping
+// servers during shutdown).
+pub struct InstanceLock(#[allow(dead_code)] std::fs::File);
+
+pub fn lock_instance(layout: &Layout) -> io::Result<InstanceLock> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::create_dir_all(&layout.data_root)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(layout.data_root.join("agent.lock"))?;
+    // SAFETY: the descriptor is valid for the lifetime of `file`.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "another agent is already using this data directory",
+        ));
+    }
+    Ok(InstanceLock(file))
+}
+
 fn tool(name: &str) -> PathBuf {
     ["/usr/sbin", "/usr/bin", "/sbin", "/bin"]
         .iter()

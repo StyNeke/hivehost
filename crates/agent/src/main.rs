@@ -19,6 +19,27 @@ fn config_from_env() -> Result<manager_agent::host::AgentConfig, Box<dyn std::er
     if let Ok(proxy) = env::var("GM_CONTAINER_PROXY") {
         config.container_proxy = Some(manager_agent::host::parse_proxy(&proxy)?);
     }
+    for (variable, slot) in [
+        ("GM_CONTAINER_CA_FILE", &mut config.container_ca_file),
+        (
+            "GM_CONTAINER_JAVA_TRUSTSTORE",
+            &mut config.container_java_truststore,
+        ),
+    ] {
+        if let Ok(path) = env::var(variable) {
+            let path = PathBuf::from(path);
+            // Commas would split the --mount specification.
+            if !path.is_absolute()
+                || !path.is_file()
+                || path.to_str().is_none_or(|p| p.contains(','))
+            {
+                return Err(
+                    format!("{variable} must be an absolute path to an existing file").into(),
+                );
+            }
+            *slot = Some(path);
+        }
+    }
     if let Ok(base) = env::var("GM_GAME_UID_BASE") {
         config.uid_base = base.parse()?;
         if config.uid_base < 10_000 {
@@ -75,6 +96,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_uid: u32 = env::var("GM_API_UID")
         .map_err(|_| "GM_API_UID must identify the authorized API service user")?
         .parse()?;
+    let _instance = manager_agent::storage::lock_instance(&manager_agent::storage::Layout {
+        data_root: config.data_root.clone(),
+    })?;
     let runtime = Arc::new(Runtime::new(config));
     runtime.load().await?;
     let listener = bind_private(&path)?;
