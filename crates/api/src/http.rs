@@ -1,0 +1,297 @@
+use crate::auth::{AuthError, AuthStore};
+use axum::{
+    Json, Router,
+    extract::{DefaultBodyLimit, Request, State},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use tokio::sync::Semaphore;
+
+#[derive(Clone)]
+struct AppState {
+    database: PathBuf,
+    origin: String,
+    auth_slots: Arc<Semaphore>,
+    attempts: Arc<Mutex<VecDeque<Instant>>>,
+}
+
+type ApiError = (StatusCode, Json<ErrorBody>);
+
+#[derive(Serialize)]
+struct ErrorBody {
+    code: &'static str,
+    message: &'static str,
+}
+
+fn error(status: StatusCode, code: &'static str, message: &'static str) -> ApiError {
+    (status, Json(ErrorBody { code, message }))
+}
+
+fn storage_error() -> ApiError {
+    error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal",
+        "Request could not be completed",
+    )
+}
+fn unauthorized() -> ApiError {
+    error(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "Sign in to continue",
+    )
+}
+fn limited() -> ApiError {
+    error(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limited",
+        "Too many attempts; try again later",
+    )
+}
+
+fn auth_error(err: AuthError) -> ApiError {
+    match err {
+        AuthError::InvalidCredentials => error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_credentials",
+            "Invalid username or password",
+        ),
+        AuthError::InvalidInvite => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_invite",
+            "Invalid or expired invitation",
+        ),
+        AuthError::InvalidInput => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_input",
+            "Username must be 3–32 letters, numbers, underscores or hyphens; password must be 12–1024 bytes",
+        ),
+        AuthError::Forbidden => error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Administrator access required",
+        ),
+        _ => storage_error(),
+    }
+}
+
+impl AppState {
+    async fn auth<T: Send + 'static>(
+        &self,
+        action: impl FnOnce(&mut AuthStore) -> Result<T, AuthError> + Send + 'static,
+    ) -> Result<T, ApiError> {
+        let permit = self
+            .auth_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| limited())?;
+        let path = self.database.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            action(&mut AuthStore::open(&path)?)
+        })
+        .await
+        .map_err(|_| storage_error())?
+        .map_err(auth_error)
+    }
+
+    fn allow_attempt(&self) -> Result<(), ApiError> {
+        let mut attempts = self.attempts.lock().map_err(|_| storage_error())?;
+        let now = Instant::now();
+        while attempts
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(60))
+        {
+            attempts.pop_front();
+        }
+        if attempts.len() >= 10 {
+            return Err(limited());
+        }
+        attempts.push_back(now);
+        Ok(())
+    }
+}
+
+pub fn router(database: PathBuf, origin: String) -> Router {
+    let state = AppState {
+        database,
+        origin,
+        auth_slots: Arc::new(Semaphore::new(4)),
+        attempts: Arc::new(Mutex::new(VecDeque::new())),
+    };
+    Router::new()
+        .route("/api/login", post(login))
+        .route("/api/register", post(register))
+        .route("/api/logout", post(logout))
+        .route("/api/invites", post(invite))
+        .route("/api/session", get(session))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(middleware::from_fn_with_state(state.clone(), guard))
+        .with_state(state)
+}
+
+async fn guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if request.method() != Method::GET
+        && request.method() != Method::HEAD
+        && request
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|h| h.to_str().ok())
+            != Some(state.origin.as_str())
+    {
+        return error(
+            StatusCode::FORBIDDEN,
+            "origin_rejected",
+            "Request origin is not allowed",
+        )
+        .into_response();
+    }
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
+#[derive(Deserialize)]
+struct Credentials {
+    username: String,
+    password: String,
+}
+
+async fn login(
+    State(state): State<AppState>,
+    Json(input): Json<Credentials>,
+) -> Result<Response, ApiError> {
+    state.allow_attempt()?;
+    let now = now()?;
+    let token = state
+        .auth(move |auth| auth.login(&input.username, &input.password, now))
+        .await?;
+    let mut response = StatusCode::OK.into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&format!(
+            "__Host-gm_session={token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=604800"
+        ))
+        .map_err(|_| storage_error())?,
+    );
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct Registration {
+    invite: String,
+    username: String,
+    password: String,
+}
+
+async fn register(
+    State(state): State<AppState>,
+    Json(input): Json<Registration>,
+) -> Result<StatusCode, ApiError> {
+    state.allow_attempt()?;
+    let now = now()?;
+    state
+        .auth(move |auth| auth.register(&input.invite, &input.username, &input.password, now))
+        .await?;
+    Ok(StatusCode::CREATED)
+}
+
+async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
+    let token = session_token(&headers)?;
+    state.auth(move |auth| auth.logout(&token)).await?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_static(
+            "__Host-gm_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
+        ),
+    );
+    Ok(response)
+}
+
+#[derive(Serialize)]
+struct Session {
+    id: String,
+    is_admin: bool,
+}
+
+async fn session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Session>, ApiError> {
+    let token = session_token(&headers)?;
+    let now = now()?;
+    let user = state
+        .auth(move |auth| auth.authenticate(&token, now))
+        .await?
+        .ok_or_else(unauthorized)?;
+    Ok(Json(Session {
+        id: user.id.0.to_string(),
+        is_admin: user.is_admin,
+    }))
+}
+
+#[derive(Serialize)]
+struct Invitation {
+    token: String,
+    expires_in_seconds: u32,
+}
+
+async fn invite(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Invitation>, ApiError> {
+    let token = session_token(&headers)?;
+    let now = now()?;
+    let result = state
+        .auth(move |auth| {
+            let user = auth
+                .authenticate(&token, now)?
+                .ok_or(AuthError::InvalidCredentials)?;
+            auth.invite(&user, now)
+        })
+        .await?;
+    Ok(Json(Invitation {
+        token: result,
+        expires_in_seconds: 86400,
+    }))
+}
+
+fn session_token(headers: &HeaderMap) -> Result<String, ApiError> {
+    let tokens: Vec<_> = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .flat_map(|h| h.split(';'))
+        .filter_map(|part| part.trim().strip_prefix("__Host-gm_session="))
+        .collect();
+    match tokens.as_slice() {
+        [token] if token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            Ok(token.to_string())
+        }
+        _ => Err(unauthorized()),
+    }
+}
+
+fn now() -> Result<i64, ApiError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .ok_or_else(storage_error)
+}
