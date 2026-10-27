@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-27 (Europe/Amsterdam).
 
-**Stopped at the user's explicit request: "stop and wrap up".** Do not continue implementation until the user resumes it. The earlier clarification still applies when resumed: maintain this file continuously without treating each update as a request to stop.
+**Resumed 2026-10-27** in a Claude Code cloud session ("look at the whole repo and continue") on branch `claude/ecstatic-allen-u2m477`, which carries all earlier `codex/game-server-manager` commits. The WIP checkpoint `f03c916` was finished and three milestones were added; see "Latest completed milestone". Keep maintaining this file continuously without treating each update as a request to stop.
 
 ## Read this first
 
@@ -59,13 +59,13 @@ Legend: **built** = implemented and tested for the listed scope; **partial** = o
 | Plan task | Status | Implemented | Remaining |
 | --- | --- | --- | --- |
 | 1. Host qualification | Partial; evidence recorded | Read-only inventory, real Meshnet confirmation, CPU/RAM/storage/legacy limits, Docker/network/service inspection, external contract research, capacity proposal | Enforceable disk quota layout, justified live resource budget, private TLS trust and friend-peer browser tests, runtime egg compatibility |
-| 2. Foundation | Built for current operations | UUID models, durable SQLite leases, exclusive job claiming, renewal, stale-worker fencing, recovery with same operation ID; typed bounded RPC; Linux UID/socket checks | Host-action idempotency/checkpoints when mutating Docker operations are added; remaining schema with owning features; API-to-agent integration |
+| 2. Foundation | Built for current operations | UUID models, durable SQLite leases, exclusive job claiming, renewal, stale-worker fencing, recovery with same operation ID; typed bounded RPC; Linux UID/socket checks on both agent and API client sides; API-to-agent InspectHost integration | Host-action idempotency/checkpoints when mutating Docker operations are added; remaining schema with owning features; a real agent-binary/API-client roundtrip on the Debian host |
 | 3. Accounts and permissions | Partial, substantial | Bootstrap admin CLI, Argon2id hashes, single-use expiring invites, sessions/logout, origin checks/cookies/throttling; persisted owner/member authorization and dashboard/detail separation | Ownership transfer/account lifecycle, complete endpoint coverage, stream revocation once streams exist, full audit integration |
 | 4. Shared egg library | Partial, substantial | Pinned real Java/Bedrock fixtures; strict parser and variable checks; shared HTTP import/list/details; immutable revisions, original JSON/hash retained; importer/admin edit rules | More rule/parser adapters, unused-revision deletion and server revision FK integration, runtime qualification, script/image execution |
-| 5. Capacity/allocations | Partial; transaction layer built | Checked CPU/RAM/disk rules; atomic server/owner/reservation/port/install-job creation; pinned egg revision and validated settings; admin-only private-IP allocation pool; stale/unqualified host rejection; race/rollback tests | Connect trusted agent snapshots to HTTP creation, host presets, actual quota enforcement, allocation edits and limit changes |
+| 5. Capacity/allocations | Partial; HTTP path connected | Checked CPU/RAM/disk rules; atomic server/owner/reservation/port/install-job creation; pinned egg revision and validated settings; admin-only private-IP allocation pool; stale/unqualified host rejection; race/rollback tests; HTTP creation, allocation pool and capacity overview backed by a fresh agent snapshot per request | Host presets, actual quota enforcement and qualification (agent still reports `disk_quotas_ready: false`, `disk_bytes` budget 0 and no qualified revisions), allocation edits/removal and limit changes |
 | 6. First Java game | Pending | No Docker game operations | Installer/runtime isolation, image digest pinning, game license acceptance, installation, start/readiness, operation journal, first real game |
 | 7. Console/lifecycle/metrics | Pending | Transport boundary only; resource usage explicitly unknown | Live console/logs/commands, actual metrics, state reconciliation, crash limits, boot restoration, graceful game/host shutdown and systemd ordering |
-| 8. Browser UI | Partial | Codex-style login/invite registration, sidebar, server list/access presentation, shared library import/details, admin invite page; UI tests/type checks/build | Real-browser QA, mobile inspection, production static serving/private TLS, real creation/settings/console/files/other feature views |
+| 8. Browser UI | Partial | Codex-style login/invite registration, sidebar, server list/access presentation, shared library import/details, admin invite page; host-backed creation page with capacity explanation, blockers, egg/image/variable/allocation/limit/license form and admin address form; UI tests/type checks/build; headless-Chromium layout check of the creation page against mocked API data | Signed-in real-browser QA against a running API, production static serving/private TLS, server workspace (settings/console/files/other feature views) |
 | 9. Backups/deletion | Partial | Pure retention policy: default 3, range 1–5, calculate excess only after success | Archive creation/verification/download/restore, durable recovery, space accounting, rotation, confirmed deletion/retained backup ACLs |
 | 10. Schedules/settings/activity | Pending | No scheduler or audit log | Durable scheduled occurrences, timezone handling, validated startup edits, redacted audit events and UI |
 | 11. Minecraft/Modrinth | Research + parser fixtures only | Java/Paper and Bedrock egg parsing tests; Modrinth API research | Actual edition/loader installs, version detection, dependency resolution, stopped-server extension install, client connection checks |
@@ -86,17 +86,18 @@ Legend: **built** = implemented and tested for the listed scope; **partial** = o
 | `crates/api/src/auth.rs` | Accounts, Argon2id, hashed invites/sessions, session authentication |
 | `crates/api/src/eggs.rs` | Shared library store, immutable revisions/original JSON/SHA256 |
 | `crates/api/src/servers.rs` | Metadata list/detail authorization and member toggles; no provisioning |
-| `crates/api/src/provisioning.rs` | Atomic creation/reservations/allocation pool against trusted host state; not yet connected to browser creation |
+| `crates/api/src/provisioning.rs` | Atomic creation/reservations/allocation pool against trusted host state; reservation totals and free-allocation listing |
 | `crates/api/src/database.rs` | Shared atomic schema initialization, foreign keys, busy timeout and schema-version downgrade protection |
-| `crates/api/src/http.rs` | Authenticated API routes, origin/cookie/body/worker limits, library/server handlers |
+| `crates/api/src/http.rs` | Authenticated API routes, origin/cookie/body/worker limits, library/server handlers; `router` (no agent, fails closed) and `router_with_agent` |
 | `crates/api/src/main.rs`, `config.rs` | Local CLI/bootstrap/startup validation; fixed loopback listener behind expected HTTPS origin |
 | `crates/api/migrations/0001_jobs.sql` through `0005_admission.sql` | Current feature-owned schema, including resource reservations, pinned provisioning records and port pool |
 | `crates/protocol/src/lib.rs` | Version 1 request/response, 64 KiB frames, Ping and read-only InspectHost |
 | `crates/agent/src/rpc.rs`, `linux.rs`, `main.rs` | Peer UID/socket protection; read-only host inspection dispatch; new configuration/dispatch changes still need fresh Linux socket acceptance |
 | `crates/agent/src/commands.rs`, `docker.rs`, `host.rs` | Bounded host commands, Docker inventory, hardware/private-interface inspection; no mutating game operations |
-| `crates/api/src/agent_client.rs` | Reply validation tested; actual Unix-socket client transport is unfinished |
+| `crates/api/src/agent_client.rs` | Peer-UID-checked Unix-socket client: bounded frames, 36-second exchange deadline, request/version matching, snapshot freshness (`HostAdmission::is_fresh`, 30 seconds, future timestamps rejected) |
 | `web/src/App.svelte`, `app.css`, `components/Icon.svelte` | Initial Codex-style responsive UI; no copied OpenAI assets |
 | `web/src/api.ts` | Same-origin fetch, response/error handling and compatibility details |
+| `web/src/pages/CreateServer.svelte` | Creation page driven by `/api/host` and `/api/allocations` |
 | `tests/fixtures/eggs` | MIT-licensed upstream fixtures, source revision/hashes/license |
 
 All implemented non-trivial slices were developed with failing tests first, then observed passing tests. Avoid large new abstractions or infrastructure; use the existing boundaries and lockfiles.
@@ -106,7 +107,10 @@ All implemented non-trivial slices were developed with failing tests first, then
 - `POST /api/login`, `/api/register`, `/api/logout`, `/api/invites`; `GET /api/session`.
 - `GET/POST /api/eggs`, `POST /api/eggs/{id}/revisions`, `GET /api/eggs/revisions/{id}`.
 - `GET /api/servers`, `GET /api/servers/{id}`, `PUT /api/servers/{id}/members/{user_id}`.
-- `POST /api/servers` intentionally returns **503 host_not_ready** after authentication. It does not create metadata or pretend to install a game.
+- `GET /api/host`, `GET/POST /api/allocations` (POST admin-only), `POST /api/servers`. All authenticate first, then ask the agent for a fresh snapshot per request (never cached).
+- Without `GM_AGENT_SOCKET`/`GM_AGENT_UID`, or when the agent fails/replies untrustworthily, host routes return **503 host_unavailable**. Agent blockers (quotas, unqualified runtime) return **503 host_not_ready** from creation. Capacity → 409 `capacity_exceeded` (per resource); taken/foreign allocation → 409 `allocation_unavailable`; bad variable → 400 `invalid_variable` with the egg rule text.
+- Successful creation reserves resources and queues an `install` job; **no worker runs it yet**, so nothing is installed or started. On the real host the agent still reports quotas/runtimes as unqualified, so creation remains refused there.
+- `GET /api/host` returns budget/reserved/remaining/hardware/blockers but not private IPs or occupied port bindings.
 - Egg `runtime_qualified` is **false**. Successful parsing is not runtime compatibility.
 - Server list `usage` is **null** until the collector exists. No generated CPU/RAM/disk readings or sample servers are shipped.
 - New invitations last 24 hours; sessions seven days. Usernames: 3–32 ASCII letters/digits/underscores/hyphens. Passwords: 12–1024 bytes.
@@ -116,6 +120,17 @@ All implemented non-trivial slices were developed with failing tests first, then
 - CLI API binds loopback only; `GM_ORIGIN` must be a bare HTTPS origin. Frontend dev HTTP alone does not establish working secure-cookie browser authentication. Do not weaken cookie/TLS checks to make a preview appear complete.
 
 ## Latest completed milestone
+
+Cloud session continuation, 2026-10-27 (Ubuntu 24.04 container, Rust 1.99.0 exactly as pinned, Node 22):
+
+- `8b0cd49`: implemented `AgentClient::inspect_host()` (the former `todo!()`). The three Linux transport tests were first observed failing on the stub, then passing. The 30-second freshness rule moved to `HostAdmission::is_fresh` and is shared with provisioning.
+- `0760c84`: host-backed HTTP routes listed above, `GM_AGENT_SOCKET`/`GM_AGENT_UID` configuration in `manager-api`. New Linux test `crates/api/tests/http_provisioning.rs` (fake agent on a real Unix socket) failed first, then passed: unconfigured agent, capacity overview, admin-only allocation add/duplicate, capacity rejection, successful creation and owner access, allocation reuse rejection, agent blockers.
+- `9e8e98b`: creation page replacing the static "prepare your host" panel. Three new UI tests failed first, then passed.
+- Verified on the final tree in that container: `cargo test --workspace` **45 passed, 0 failed, 1 ignored** (the explicit real-host probe); `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` clean; `npm --prefix web test -- --run` **5 passed**; `npm --prefix web run check` 0 errors/0 warnings; `npm --prefix web run build` succeeded.
+- Headless Chromium (Playwright) rendered the built creation page at 1280px and 390px against **mocked** API responses: no horizontal overflow, blockers/capacity/form/admin form legible. This is a layout check only, not a signed-in roundtrip with the real API/agent.
+- Not done in that session: no access to the Debian host, so the real agent binary was not run against the new client, and no Linux host or Windows run was repeated. Docker was not available in the container.
+
+### Earlier milestone (Codex session)
 
 After the user clarified continuous work, implementation continued beyond the first handoff checkpoint:
 
@@ -135,7 +150,7 @@ After the user clarified continuous work, implementation continued beyond the fi
 - Implementation choice: use the host's installed Docker CLI as the Docker API client, with argument arrays (no host shell interpolation), fixed local socket and a separate empty CLI config path. This avoids another SDK dependency. The only new commands implemented so far are inspection commands; no game-control operations are enabled.
 - The dedicated Linux source archive was refreshed for that qualification. Build containers had no Docker socket or legacy game-data mounts. The built test binary was then run natively with sudo to read hardware/Docker state. No legacy limits, ports, firewall rules, game files or services were changed.
 
-### Exact stopping point — unfinished work preserved
+### Former stopping point (resolved by the cloud continuation above)
 
 - Last fully verified whole-workspace checkpoint: **244e969**, atomic admission/allocation milestone, 30 passing Windows Rust tests plus formatting/Clippy.
 - Later focused checks passed: 3 command-bound tests, 3 Docker inventory tests, 2 hardware/interface parser tests, 1 reply-decoder test, existing 3 RPC tests, and 1 native read-only Linux host qualification.
@@ -221,8 +236,8 @@ The development proxy targets API port 19090. No API process/private HTTPS proxy
 
 ## Next actions for Claude / the next agent
 
-1. Resume only when the user asks. Read this file, design.md and implementation-plan.md, then check `git status` and commits. Do not redo completed foundation work or host discovery unnecessarily.
-2. Start at the unfinished API agent client. Run its Linux transport tests against the stub, implement bounded authenticated local-socket I/O and timestamp validation, then connect trusted host state to HTTP creation/options/allocation handlers. Run fresh full checks; the last full suite was before this WIP.
+1. Read this file, design.md and implementation-plan.md, then check `git status` and commits. Do not redo completed foundation work or host discovery unnecessarily.
+2. On the Debian host, run the real agent (`GM_API_UID`, `GM_AGENT_SOCKET`, `GM_PRIVATE_IPS`, `GM_DATA_ROOT`) and the API with `GM_AGENT_SOCKET`/`GM_AGENT_UID`, then confirm `GET /api/host` shows the real budget and blockers through a signed-in browser over private HTTPS. Creation is expected to be refused there until quotas/runtimes are qualified.
 3. Continue the Docker game runner behind the restricted agent and remaining allocation/limit-edit integration. Do not let browsers send arbitrary host paths, Docker IDs, mounts or commands. No privileged/host-network game or installer containers and no Docker socket in them. Restart the local preview for the pending desktop/mobile/browser checks once useful.
 4. Prepare a concrete, reversible storage and capacity rollout. Existing memory limits over-reserve this host; quota enforcement needs a real supported layout. The capacity proposal is arithmetic, not proof that the existing games tolerate lower limits.
 5. Prove one isolated Java installation/start/console/graceful-stop cycle before expanding to the rest. Add durable host-operation checkpoints and lifecycle recovery as actual operations are introduced.
@@ -252,6 +267,8 @@ The development proxy targets API port 19090. No API process/private HTTPS proxy
 - `c25fc91`: Linux peer-authenticated agent health protocol and Linux validation evidence.
 - `3d0eadd`: server metadata/access APIs, initial Codex-style UI, and root-level handoff documents.
 - `244e969`: shared versioned database initialization and atomic resource/allocation/server/install-job creation.
+- `f03c916`: WIP host inspection (bounded commands, Docker inventory, hardware/interface parsing) with the client stub.
+- `8b0cd49`: agent client transport. `0760c84`: host-backed HTTP creation/allocations/overview. `9e8e98b`: creation page.
 
 Use `git log` and `git status` for the final current commit; documentation-only follow-ups may be newer than the implementation checkpoints above.
 
