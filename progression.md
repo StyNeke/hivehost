@@ -211,8 +211,9 @@ The development proxy targets API port 19090. No API process/private HTTPS proxy
 - `a13153f`: invite-only authentication and private-origin API.
 - `957b89b`: strict shared egg imports, immutable revisions, pinned fixtures.
 - `c25fc91`: Linux peer-authenticated agent health protocol and Linux validation evidence.
+- `3d0eadd`: server metadata/access APIs, initial Codex-style UI, and root-level handoff documents.
 
-Server metadata/UI and this root-level handoff were being checkpointed after these commits. Use `git log` and `git status` for the final current commit rather than assuming uncommitted work was lost.
+Use `git log` and `git status` for the final current commit; documentation-only follow-ups may be newer than the implementation checkpoints above.
 
 ## Suggested continuation prompt
 
