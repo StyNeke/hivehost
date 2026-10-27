@@ -8,9 +8,9 @@
   type Allocation = { id: string; ip: string; port: number; transport: 'tcp' | 'udp' };
   type Variable = { name: string; env_variable: string; default_value: string; description: string; user_viewable: boolean; user_editable: boolean };
   type EggDetails = { images: [string, string][]; variables: Variable[]; features: string[] };
-  type Egg = { id: string; name: string; revision: string };
+  type Egg = { id: string; name: string; revision: string; runtime_qualified: boolean };
 
-  let { eggs, isAdmin, onCreated, onClose }: { eggs: Egg[]; isAdmin: boolean; onCreated: (message: string) => Promise<void>; onClose: () => void } = $props();
+  let { eggs, isAdmin, onCreated, onClose }: { eggs: Egg[]; isAdmin: boolean; onCreated: (message: string, id: string) => Promise<void>; onClose: () => void } = $props();
 
   const GIB = 1024 ** 3;
   let host = $state<Host | null>(null);
@@ -65,12 +65,12 @@
     if (!canSubmit) return;
     busy = true; formError = '';
     try {
-      await api('/api/servers', { method: 'POST', body: JSON.stringify({
+      const created = await api<{ id: string }>('/api/servers', { method: 'POST', body: JSON.stringify({
         name: name.trim(), egg_revision: revision, image, allocation_id: allocation,
         limits: { memory_bytes: Math.round(memoryGib * GIB), disk_bytes: Math.round(diskGib * GIB), cpu_millis: Math.round(cpuCores * 1000) },
         variables: values, license_accepted: licenseAccepted,
       }) });
-      await onCreated('Server created and its resources reserved. Installation is queued; the game runner is not available yet, so it will not start.');
+      await onCreated('Server created and its resources reserved. Installation has started.', created.id);
     } catch (reason) { formError = message(reason); await loadHost().catch(() => {}); }
     finally { busy = false; }
   }
@@ -113,7 +113,7 @@
         <label for="server-egg">Game</label>
         <select id="server-egg" bind:value={revision} onchange={chooseEgg} required>
           <option value="">Choose an egg…</option>
-          {#each eggs as egg (egg.id)}<option value={egg.revision}>{egg.name}</option>{/each}
+          {#each eggs as egg (egg.id)}<option value={egg.revision} disabled={!egg.runtime_qualified && !isAdmin}>{egg.name}{egg.runtime_qualified ? '' : isAdmin ? ' (test install, not yet qualified)' : ' (not yet qualified)'}</option>{/each}
         </select>
         {#if details}
           <label for="server-image">Environment</label>

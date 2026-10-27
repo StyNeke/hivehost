@@ -24,7 +24,7 @@ function mockApi(hostResponse: () => Response, onCreate?: (body: any) => Respons
     if (path === '/api/session') return Response.json({ id: 'member', is_admin: false });
     if (path === '/api/servers' && options?.method === 'POST') return onCreate!(JSON.parse(String(options.body)));
     if (path === '/api/servers') return Response.json([]);
-    if (path === '/api/eggs') return Response.json([{ id: 'egg', name: 'Paper', revision: 'rev-1', runtime_qualified: false }]);
+    if (path === '/api/eggs') return Response.json([{ id: 'egg', name: 'Paper', revision: 'rev-1', runtime_qualified: true }]);
     if (path === '/api/host') return hostResponse();
     if (path === '/api/allocations') return Response.json([{ id: 'alloc-1', ip: '100.116.183.201', port: 25600, transport: 'tcp' }]);
     if (path === '/api/eggs/revisions/rev-1') return Response.json(egg);
@@ -88,6 +88,6 @@ test('a ready host creates a server with the chosen egg, allocation and limits',
     limits: { memory_bytes: 4 * GIB, disk_bytes: 10 * GIB, cpu_millis: 1500 },
     variables: { MINECRAFT_VERSION: '1.21.4' }, license_accepted: true,
   });
-  await screen.findByText(/installation is queued/i);
+  await screen.findByText(/Installation has started/i);
   expect(fetchMock.mock.calls.filter(([path, options]) => path === '/api/servers' && !options?.method).length).toBeGreaterThan(1);
 });

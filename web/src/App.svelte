@@ -3,6 +3,7 @@
   import { api, ApiError } from './api';
   import Icon from './components/Icon.svelte';
   import CreateServer from './pages/CreateServer.svelte';
+  import ServerWorkspace from './pages/ServerWorkspace.svelte';
 
   type Session = { id: string; is_admin: boolean };
   type Server = { id: string; name: string; can_access: boolean; usage: null | { cpu_percent: number; memory_bytes: number; disk_bytes: number } };
@@ -20,7 +21,7 @@
   let notice = $state('');
   let query = $state('');
   let selectedFile = $state<File | undefined>();
-  let selectedEgg = $state<EggDetails | null>(null);
+  let selectedEgg = $state<(EggDetails & { revision: string; qualified: boolean }) | null>(null);
   let selectedServer = $state<{ id: string; name: string } | null>(null);
   let inviteLink = $state('');
   let createOpen = $state(false);
@@ -78,9 +79,23 @@
       inviteLink = link.toString();
     });
   }
-  async function openServer(server: Server) {
+  function openServer(server: Server) {
     if (!server.can_access) return;
-    await run(async () => { selectedServer = await api(`/api/servers/${server.id}`); navigate('server'); });
+    navigate('server');
+    selectedServer = { id: server.id, name: server.name };
+  }
+  async function openEgg(egg: Egg) {
+    await run(async () => { selectedEgg = { ...(await api<EggDetails>(`/api/eggs/revisions/${egg.revision}`)), revision: egg.revision, qualified: egg.runtime_qualified }; });
+  }
+  async function qualify() {
+    if (!selectedEgg) return;
+    const revision = selectedEgg.revision;
+    await run(async () => {
+      await api(`/api/eggs/revisions/${revision}/qualification`, { method: 'POST' });
+      eggs = await api<Egg[]>('/api/eggs');
+      if (selectedEgg) selectedEgg = { ...selectedEgg, qualified: true };
+      notice = 'Teammates can now create servers from this egg revision.';
+    });
   }
   function memory(bytes: number) { return `${(bytes / 1024 ** 3).toFixed(1)} GiB`; }
 </script>
@@ -129,7 +144,7 @@
       {:else if page === 'servers'}
         <section class="page-content">
           <div class="page-heading"><div><div class="eyebrow">Your workspace</div><h1>Servers</h1><p>All your worlds. One place to manage them.</p></div><button class="primary" onclick={() => { createOpen = !createOpen; }}><Icon name="plus" size={16} /> Add server</button></div>
-          {#if createOpen}<CreateServer {eggs} isAdmin={session.is_admin} onClose={() => { createOpen = false; }} onCreated={async (message) => { servers = await api<Server[]>('/api/servers'); createOpen = false; error = ''; notice = message; }} />{/if}
+          {#if createOpen}<CreateServer {eggs} isAdmin={session.is_admin} onClose={() => { createOpen = false; }} onCreated={async (message, id) => { servers = await api<Server[]>('/api/servers'); const created = servers.find(server => server.id === id); if (created) openServer(created); notice = message; }} />{/if}
           <div class="list-toolbar"><label class="search-box"><Icon name="search" size={16} /><input aria-label="Search servers" placeholder="Search servers…" bind:value={query} /></label><span class="muted">{servers.length} {servers.length === 1 ? 'server' : 'servers'}</span></div>
           {#if !servers.length}
             <div class="empty-state"><div class="empty-icon"><Icon name="servers" size={25} /></div><h2>A home for your next world</h2><p>Your servers will appear here. Start by adding game definitions to the shared egg library.</p><button class="secondary" onclick={() => navigate('library')}>Open egg library <Icon name="arrow" size={15} /></button></div>
@@ -140,13 +155,15 @@
         <section class="page-content">
           <div class="page-heading"><div><div class="eyebrow">Shared with your team</div><h1>Egg library</h1><p>Bring your games with you. Import a game definition to get started.</p></div><span class="count-badge">{eggs.length} {eggs.length === 1 ? 'egg' : 'eggs'}</span></div>
           <form class="panel import-panel" onsubmit={importEgg}><div><h2>Import an egg</h2><p>Choose a Pterodactyl egg JSON file. Imported definitions are shared with everyone on your team.</p><label class="file-picker" for="egg-file">Egg JSON file</label><input id="egg-file" type="file" accept=".json,application/json" onchange={(event) => { selectedFile = event.currentTarget.files?.[0]; }} /></div><button class="primary" disabled={!selectedFile || busy}>{busy ? 'Importing…' : 'Import egg'}</button></form>
-          {#if !eggs.length}<div class="empty-state compact"><div class="empty-icon"><Icon name="library" size={25} /></div><h2>Your shared collection starts here</h2><p>Import your first egg using the form above.</p></div>{:else}<div class="egg-grid">{#each eggs as egg (egg.id)}<button class="egg-card" onclick={() => run(async () => { selectedEgg = await api<EggDetails>(`/api/eggs/revisions/${egg.revision}`); })}><span class="egg-card-icon"><Icon name="library" size={20} /></span><h2>{egg.name}</h2><p class="muted">Shared game definition</p><span class="tag">{egg.runtime_qualified ? 'Ready to install' : 'Needs runtime testing'}</span></button>{/each}</div>{/if}
-          {#if selectedEgg}<section class="panel egg-details"><div class="detail-heading"><h2>{selectedEgg.name}</h2><button class="icon-button" aria-label="Close egg details" onclick={() => { selectedEgg = null; }}><Icon name="close" /></button></div><p>{selectedEgg.description}</p><dl><dt>Author</dt><dd>{selectedEgg.author}</dd><dt>Available environments</dt><dd>{selectedEgg.images.map(([name]) => name).join(', ')}</dd><dt>Settings</dt><dd>{selectedEgg.variables.map(variable => variable.name).join(', ')}</dd></dl></section>{/if}
+          {#if !eggs.length}<div class="empty-state compact"><div class="empty-icon"><Icon name="library" size={25} /></div><h2>Your shared collection starts here</h2><p>Import your first egg using the form above.</p></div>{:else}<div class="egg-grid">{#each eggs as egg (egg.id)}<button class="egg-card" onclick={() => openEgg(egg)}><span class="egg-card-icon"><Icon name="library" size={20} /></span><h2>{egg.name}</h2><p class="muted">Shared game definition</p><span class="tag">{egg.runtime_qualified ? 'Ready to install' : 'Needs runtime testing'}</span></button>{/each}</div>{/if}
+          {#if selectedEgg}<section class="panel egg-details"><div class="detail-heading"><h2>{selectedEgg.name}</h2><button class="icon-button" aria-label="Close egg details" onclick={() => { selectedEgg = null; }}><Icon name="close" /></button></div><p>{selectedEgg.description}</p><dl><dt>Author</dt><dd>{selectedEgg.author}</dd><dt>Available environments</dt><dd>{selectedEgg.images.map(([name]) => name).join(', ')}</dd><dt>Settings</dt><dd>{selectedEgg.variables.map(variable => variable.name).join(', ')}</dd><dt>Runtime</dt><dd>{selectedEgg.qualified ? 'Qualified by an administrator' : 'Not yet qualified. Administrators can test-install it, then mark it as qualified for everyone.'}</dd></dl>{#if session.is_admin && !selectedEgg.qualified}<button class="secondary qualify" disabled={busy} onclick={qualify}>Mark runtime qualified</button>{/if}</section>{/if}
         </section>
       {:else if page === 'team' && session.is_admin}
         <section class="page-content"><div class="page-heading"><div><div class="eyebrow">Better with friends</div><h1>Team</h1><p>Invite the people you want to build worlds with.</p></div></div><section class="panel invite-panel"><span class="empty-icon"><Icon name="users" size={24} /></span><div><h2>Invite a teammate</h2><p>Each invitation works once and expires after 24 hours. Your teammate chooses their own password.</p><button class="primary" disabled={busy} onclick={invite}><Icon name="plus" size={16} /> Invite teammate</button>{#if inviteLink}<label for="invite-link">Invitation link</label><input id="invite-link" readonly value={inviteLink} onclick={(event) => event.currentTarget.select()} /><small class="muted">Share this link privately with your teammate.</small>{/if}</div></section></section>
       {:else if page === 'server' && selectedServer}
-        <section class="page-content"><div class="page-heading"><div><div class="eyebrow">Your server</div><h1>{selectedServer.name}</h1></div><button class="secondary" onclick={() => navigate('servers')}>Back to servers</button></div><section class="panel"><h2>Host setup required</h2><p>Server controls will become available after host setup is complete.</p></section></section>
+        {#key selectedServer.id}
+          <ServerWorkspace serverId={selectedServer.id} onBack={() => navigate('servers')} onDeleted={async (name) => { servers = await api<Server[]>('/api/servers'); navigate('servers'); notice = `${name} was deleted.`; }} />
+        {/key}
       {/if}
     </main>
     <footer class="workspace-footer">Game Manager <span>Built for your team. Hosted by you.</span></footer>

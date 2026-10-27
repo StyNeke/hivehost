@@ -10,6 +10,13 @@
     logout: 'M9 5H4v14h5 M10 12h11 M17 8l4 4-4 4',
     close: 'M6 6l12 12 M18 6 6 18',
     chevron: 'M9 5l7 7-7 7',
+    play: 'M7 5l12 7-12 7z',
+    stop: 'M6 6h12v12H6z',
+    restart: 'M20 11a8 8 0 1 0-2.3 5.7 M20 4v7h-7',
+    terminal: 'M4 5h16v14H4z M7 9l3 3-3 3 M12 15h5',
+    trash: 'M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13',
+    puzzle: 'M10 3h4v3a2 2 0 1 0 4 0V3h3v7h-3a2 2 0 1 0 0 4h3v7h-7v-3a2 2 0 1 0-4 0v3H3v-7h3a2 2 0 1 0 0-4H3V3h7z',
+    activity: 'M3 12h4l3 8 4-16 3 8h4',
   };
   let { name, size = 18 }: { name: keyof typeof paths; size?: number } = $props();
 </script>

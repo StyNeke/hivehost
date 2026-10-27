@@ -54,7 +54,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(agent) = agent.clone() {
         tokio::spawn(manager_api::worker::run(database.clone(), agent));
     }
-    let app = router_with_services(database, origin.clone(), agent, &modrinth);
+    let mut app = router_with_services(database, origin.clone(), agent, &modrinth);
+    if let Ok(directory) = env::var("GM_STATIC_DIR") {
+        let directory = PathBuf::from(directory);
+        if !directory.join("index.html").is_file() {
+            return Err("GM_STATIC_DIR must contain the built interface (index.html)".into());
+        }
+        app = manager_api::http::with_static_files(app, &directory);
+    }
     let listener = tokio::net::TcpListener::bind(address).await?;
     println!("API listening on {address}; expected private HTTPS origin: {origin}");
     axum::serve(listener, app)

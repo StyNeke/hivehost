@@ -254,6 +254,56 @@ pub fn router_with_agent(database: PathBuf, origin: String, agent: AgentClient) 
     router_with_services(database, origin, Some(agent), MODRINTH_API)
 }
 
+// Serves the built browser interface from `directory` for every non-API path.
+pub fn with_static_files(router: Router, directory: &std::path::Path) -> Router {
+    use tower::ServiceExt;
+    use tower_http::services::{ServeDir, ServeFile};
+    let files = ServeDir::new(directory)
+        .append_index_html_on_directories(true)
+        .fallback(ServeFile::new(directory.join("index.html")));
+    router
+        .fallback(move |request: Request| {
+            let files = files.clone();
+            async move {
+                // Unknown API paths stay JSON 404s instead of looking like a successful page load.
+                if request.uri().path().starts_with("/api/") {
+                    return error(StatusCode::NOT_FOUND, "not_found", "Not found").into_response();
+                }
+                match files.oneshot(request).await {
+                    Ok(response) => response.into_response(),
+                    Err(_) => storage_error().into_response(),
+                }
+            }
+        })
+        .layer(middleware::from_fn(page_headers))
+}
+
+// The interface uses no inline scripts, frames or third-party origins, so the policy can be strict.
+async fn page_headers(request: Request, next: Next) -> Response {
+    let api = request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if !api {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+            ),
+        );
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+        headers.insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    }
+    response
+}
+
 pub fn router_with_services(
     database: PathBuf,
     origin: String,
