@@ -96,3 +96,53 @@ fn unsupported_or_repeated_rules_cannot_silently_weaken_validation() {
     assert!(validate_variable(&variable, "yes").is_ok());
     assert!(validate_variable(&variable, "maybe").is_err());
 }
+
+const FABRIC: &[u8] = include_bytes!("../../../tests/fixtures/eggs/fabric.json");
+
+#[test]
+fn pinned_fabric_egg_normalizes_with_its_interaction_hints_and_length_rules() {
+    let fabric = normalize_egg(FABRIC).unwrap();
+    assert_eq!(fabric.name, "Fabric");
+    assert_eq!(fabric.ready_when, ")! For help, type ");
+    assert_eq!(fabric.installer.container, "eclipse-temurin:21-jdk-jammy");
+    assert!(fabric.features.contains(&"eula".to_string()));
+    for variable in &fabric.variables {
+        validate_variable(variable, &variable.default_value).unwrap();
+    }
+    let version = fabric
+        .variables
+        .iter()
+        .find(|v| v.env_variable == "MC_VERSION")
+        .unwrap();
+    assert!(validate_variable(version, "1.21.4").is_ok());
+    assert!(validate_variable(version, "1.").is_err());
+    assert!(validate_variable(version, &"1".repeat(16)).is_err());
+}
+
+#[test]
+fn length_rules_and_log_settings_fail_closed_when_malformed() {
+    let egg = normalize_egg(JAVA).unwrap();
+    let mut variable = egg.variables[0].clone();
+    variable.rules = "string|min:2".into();
+    assert!(validate_variable(&variable, "a").is_err());
+    assert!(validate_variable(&variable, "ab").is_ok());
+    for rules in [
+        "between:5,3",
+        "between:3",
+        "between:a,b",
+        "min:x",
+        "between:1,9|min:6",
+        "between:1,9|max:2",
+    ] {
+        variable.rules = rules.into();
+        assert!(validate_variable(&variable, "abcd").is_err(), "{rules}");
+    }
+    let mut raw: Value = serde_json::from_slice(FABRIC).unwrap();
+    raw["config"]["logs"] = json!(r#"{"custom":true,"location":"logs/latest.log"}"#);
+    assert!(normalize_egg(&serde_json::to_vec(&raw).unwrap()).is_err());
+    raw["config"]["logs"] = json!(r#"{"custom":false,"extra":1}"#);
+    assert!(normalize_egg(&serde_json::to_vec(&raw).unwrap()).is_err());
+    raw = serde_json::from_slice(FABRIC).unwrap();
+    raw["config"]["startup"] = json!(r#"{"done":"ready","userInteraction":"not a list"}"#);
+    assert!(normalize_egg(&serde_json::to_vec(&raw).unwrap()).is_err());
+}

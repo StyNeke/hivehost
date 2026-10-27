@@ -99,6 +99,17 @@ struct Scripts {
 #[serde(deny_unknown_fields)]
 struct Readiness {
     done: String,
+    // Hints for prompts such as the EULA; the EULA itself is handled by the "eula" feature.
+    #[serde(default, rename = "userInteraction")]
+    _user_interaction: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogSettings {
+    custom: bool,
+    #[serde(rename = "location")]
+    _location: Option<String>,
 }
 
 fn issue(path: impl Into<String>, message: impl Into<String>) -> Vec<CompatibilityIssue> {
@@ -180,9 +191,16 @@ pub fn normalize_egg(raw: &[u8]) -> Result<EggRevision, Vec<CompatibilityIssue>>
             "startup and stop command must be nonempty and valid",
         ));
     }
-    let logs: serde_json::Value =
-        serde_json::from_str(&egg.config.logs).map_err(|e| issue("config.logs", e.to_string()))?;
-    if logs.as_object().is_none_or(|o| !o.is_empty()) {
+    // "{}" and {"custom": false} both mean the console stream is the log; custom log files are not qualified.
+    let logs: Option<LogSettings> = if egg.config.logs.trim() == "{}" {
+        None
+    } else {
+        Some(
+            serde_json::from_str(&egg.config.logs)
+                .map_err(|e| issue("config.logs", e.to_string()))?,
+        )
+    };
+    if logs.is_some_and(|logs| logs.custom) {
         return Err(issue(
             "config.logs",
             "custom log configuration is unsupported",
@@ -300,6 +318,7 @@ struct Rules {
     required: bool,
     nullable: bool,
     max: Option<usize>,
+    min: Option<usize>,
     choices: Option<Vec<String>>,
     pattern: Option<regex::Regex>,
 }
@@ -323,8 +342,22 @@ fn parse_rules(input: &str) -> Result<Rules, String> {
             "required" => rules.required = true,
             "nullable" => rules.nullable = true,
             "string" => {}
-            _ if rule.starts_with("max:") => {
+            _ if rule.starts_with("max:") && rules.max.is_none() => {
                 rules.max = Some(rule[4..].parse().map_err(|_| "invalid max rule")?)
+            }
+            _ if rule.starts_with("min:") && rules.min.is_none() => {
+                rules.min = Some(rule[4..].parse().map_err(|_| "invalid min rule")?)
+            }
+            // Laravel's between:a,b on strings bounds the length inclusively.
+            _ if rule.starts_with("between:") => {
+                let (low, high) = rule[8..].split_once(',').ok_or("invalid between rule")?;
+                let low: usize = low.parse().map_err(|_| "invalid between rule")?;
+                let high: usize = high.parse().map_err(|_| "invalid between rule")?;
+                if low > high || rules.min.is_some() || rules.max.is_some() {
+                    return Err("invalid between rule".into());
+                }
+                rules.min = Some(low);
+                rules.max = Some(high);
             }
             _ if rule.starts_with("in:") => {
                 rules.choices = Some(rule[3..].split(',').map(str::to_owned).collect())
@@ -371,6 +404,9 @@ pub fn validate_variable(variable: &Variable, value: &str) -> Result<(), String>
     }
     if rules.max.is_some_and(|max| value.chars().count() > max) {
         return Err("value exceeds maximum length".into());
+    }
+    if rules.min.is_some_and(|min| value.chars().count() < min) {
+        return Err("value is shorter than the minimum length".into());
     }
     if rules
         .choices
