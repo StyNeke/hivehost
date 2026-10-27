@@ -1,11 +1,17 @@
 use crate::auth::{AuthError, AuthStore};
+use crate::eggs::{EggStore, EggSummary, LibraryError};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Request, State},
+    body::Bytes,
+    extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
+};
+use manager_core::{
+    eggs::CompatibilityIssue,
+    model::{EggRevisionId, UserId},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -15,6 +21,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Semaphore;
+use uuid::Uuid;
 
 #[derive(Clone)]
 struct AppState {
@@ -30,10 +37,19 @@ type ApiError = (StatusCode, Json<ErrorBody>);
 struct ErrorBody {
     code: &'static str,
     message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<Vec<CompatibilityIssue>>,
 }
 
 fn error(status: StatusCode, code: &'static str, message: &'static str) -> ApiError {
-    (status, Json(ErrorBody { code, message }))
+    (
+        status,
+        Json(ErrorBody {
+            code,
+            message,
+            details: None,
+        }),
+    )
 }
 
 fn storage_error() -> ApiError {
@@ -85,6 +101,32 @@ fn auth_error(err: AuthError) -> ApiError {
 }
 
 impl AppState {
+    async fn library<T: Send + 'static>(
+        &self,
+        headers: &HeaderMap,
+        action: impl FnOnce(&mut EggStore, UserId) -> Result<T, LibraryError> + Send + 'static,
+    ) -> Result<T, ApiError> {
+        let token = session_token(headers)?;
+        let now = now()?;
+        let permit = self
+            .auth_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| limited())?;
+        let path = self.database.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let user = AuthStore::open(&path)
+                .map_err(auth_error)?
+                .authenticate(&token, now)
+                .map_err(auth_error)?
+                .ok_or_else(unauthorized)?;
+            action(&mut EggStore::open(&path).map_err(library_error)?, user.id)
+                .map_err(library_error)
+        })
+        .await
+        .map_err(|_| storage_error())?
+    }
     async fn auth<T: Send + 'static>(
         &self,
         action: impl FnOnce(&mut AuthStore) -> Result<T, AuthError> + Send + 'static,
@@ -134,6 +176,17 @@ pub fn router(database: PathBuf, origin: String) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/invites", post(invite))
         .route("/api/session", get(session))
+        .route(
+            "/api/eggs",
+            get(list_eggs)
+                .post(import_egg)
+                .layer(DefaultBodyLimit::max(1024 * 1024)),
+        )
+        .route(
+            "/api/eggs/{id}/revisions",
+            post(revise_egg).layer(DefaultBodyLimit::max(1024 * 1024)),
+        )
+        .route("/api/eggs/revisions/{id}", get(get_revision))
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -294,4 +347,72 @@ fn now() -> Result<i64, ApiError> {
         .ok()
         .and_then(|d| i64::try_from(d.as_secs()).ok())
         .ok_or_else(storage_error)
+}
+
+fn library_error(err: LibraryError) -> ApiError {
+    match err {
+        LibraryError::Unsupported(issues) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorBody {
+                code: "unsupported_egg",
+                message: "Egg could not be imported; review the compatibility details",
+                details: Some(issues),
+            }),
+        ),
+        LibraryError::Forbidden => error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Only the importer or administrator may change this egg",
+        ),
+        LibraryError::NotFound => {
+            error(StatusCode::NOT_FOUND, "not_found", "Egg revision not found")
+        }
+        _ => storage_error(),
+    }
+}
+
+async fn list_eggs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<EggSummary>>, ApiError> {
+    state
+        .library(&headers, |store, _| store.list())
+        .await
+        .map(Json)
+}
+
+async fn import_egg(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<(StatusCode, Json<EggSummary>), ApiError> {
+    let imported = state
+        .library(&headers, move |store, actor| store.import(actor, &body))
+        .await?;
+    Ok((StatusCode::CREATED, Json(imported)))
+}
+
+async fn revise_egg(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<(StatusCode, Json<EggSummary>), ApiError> {
+    let revised = state
+        .library(&headers, move |store, actor| store.revise(actor, id, &body))
+        .await?;
+    Ok((StatusCode::CREATED, Json(revised)))
+}
+
+async fn get_revision(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<manager_core::eggs::EggRevision>, ApiError> {
+    state
+        .library(&headers, move |store, _| {
+            store.revision(EggRevisionId(id)).map(|r| r.normalized)
+        })
+        .await
+        .map(Json)
 }

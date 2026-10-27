@@ -1,0 +1,2 @@
+* text=auto eol=lf
+/tests/fixtures/eggs/*.json -text
