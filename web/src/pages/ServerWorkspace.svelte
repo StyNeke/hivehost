@@ -88,11 +88,24 @@
     if (action === 'kill' && !confirm('Force-stop without saving? Unsaved progress can be lost.')) return;
     await api(`/api/servers/${serverId}/power`, { method: 'POST', body: JSON.stringify({ action }) });
   });
-  async function send(event: SubmitEvent) {
+  // Commands behave like a terminal: the input clears at once and commands are sent in order,
+  // so typing the next one never waits for (or is blocked by) the previous request.
+  let outgoing: Promise<void> = Promise.resolve();
+  function send(event: SubmitEvent) {
     event.preventDefault();
     const text = command.trim();
     if (!text) return;
-    await act(async () => { await api(`/api/servers/${serverId}/console`, { method: 'POST', body: JSON.stringify({ command: text }) }); command = ''; });
+    command = '';
+    error = '';
+    outgoing = outgoing.then(async () => {
+      try {
+        await api(`/api/servers/${serverId}/console`, { method: 'POST', body: JSON.stringify({ command: text }) });
+        void refresh();
+      } catch (reason) {
+        report(reason);
+        if (!command) command = text;
+      }
+    });
   }
   function scrolled() {
     if (consoleBox) stuckToBottom = consoleBox.scrollHeight - consoleBox.scrollTop - consoleBox.clientHeight < 24;
@@ -137,7 +150,7 @@
       <button class="link-button" onclick={onBack}><Icon name="chevron" size={13} /> Servers</button>
       <h1>{detail?.name ?? 'Server'}</h1>
       {#if detail?.details}
-        <p>{detail.details.egg_name}{#if runtime?.game} · Minecraft {runtime.game.version}{runtime.game.loader ? ` with ${runtime.game.loader}` : ''}{/if} · {detail.details.binding.ip}:{detail.details.binding.port}</p>
+        <p>{[detail.details.egg_name, runtime?.game ? `Minecraft ${runtime.game.version}${runtime.game.loader ? ` with ${runtime.game.loader}` : ''}` : '', `${detail.details.binding.ip}:${detail.details.binding.port}`].filter(Boolean).join(' · ')}</p>
       {/if}
     </div>
     {#if detail?.details}
@@ -189,7 +202,7 @@
         <form class="console-input" onsubmit={send}>
           <span aria-hidden="true">›</span>
           <input aria-label="Console command" placeholder={power === 'offline' ? 'Start the server to send commands' : 'Type a command, e.g. list'} bind:value={command} maxlength="512" disabled={power === 'offline' || power === 'stopping'} autocomplete="off" />
-          <button class="secondary" disabled={busy || !command.trim() || power === 'offline' || power === 'stopping'}>Send</button>
+          <button class="secondary" disabled={!command.trim() || power === 'offline' || power === 'stopping'}>Send</button>
         </form>
       </section>
     {:else if tab === 'mods'}
@@ -207,7 +220,7 @@
             <ul class="mod-list">
               {#each hits as hit (hit.project_id)}
                 <li><div><strong>{hit.title}</strong><small>{hit.description}</small></div>
-                  <button class="primary" disabled={busy || !stopped || !!operation} onclick={() => installExtension(hit)}>{extensions.managed.some(m => m.project_id === hit.project_id) ? 'Update' : 'Install'}</button></li>
+                  <button class="primary" disabled={busy || !stopped || !!operation} onclick={() => installExtension(hit)}>{extensions.managed.some(m => m.project_id === hit.project_id) ? 'Check for update' : 'Install'}</button></li>
               {/each}
             </ul>
           {/if}

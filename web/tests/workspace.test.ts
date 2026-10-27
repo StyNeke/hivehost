@@ -37,9 +37,12 @@ test('a running server shows status and console, sends commands and offers only 
   expect((within(controls).getByRole('button', { name: /Start/ }) as HTMLButtonElement).disabled).toBe(true);
   expect((within(controls).getByRole('button', { name: /Stop/ }) as HTMLButtonElement).disabled).toBe(false);
   const user = userEvent.setup();
+  // Commands typed back to back are all sent, in order, without waiting for each other.
   await user.type(screen.getByLabelText('Console command'), 'player Bot_Beta spawn{Enter}');
-  await waitFor(() => expect(calls.some(c => c.method === 'POST' && c.path === '/api/servers/s1/console' && c.body.command === 'player Bot_Beta spawn')).toBe(true));
   expect((screen.getByLabelText('Console command') as HTMLInputElement).value).toBe('');
+  await user.type(screen.getByLabelText('Console command'), 'player Bot_Gamma spawn{Enter}');
+  await user.type(screen.getByLabelText('Console command'), 'list{Enter}');
+  await waitFor(() => expect(calls.filter(c => c.method === 'POST' && c.path === '/api/servers/s1/console').map(c => c.body.command)).toEqual(['player Bot_Beta spawn', 'player Bot_Gamma spawn', 'list']));
   await user.click(within(controls).getByRole('button', { name: /Restart/ }));
   await waitFor(() => expect(calls.some(c => c.path === '/api/servers/s1/power' && c.body.action === 'restart')).toBe(true));
 });
