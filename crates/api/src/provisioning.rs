@@ -149,11 +149,6 @@ impl ProvisioningStore {
                 "disk quota enforcement has not been qualified",
             ));
         }
-        if !host.qualified_revisions.contains(&request.egg_revision) {
-            return Err(ProvisioningError::HostNotReady(
-                "egg runtime has not been qualified",
-            ));
-        }
         if request.name.trim().is_empty()
             || request.name.chars().count() > 80
             || request.name.chars().any(char::is_control)
@@ -172,13 +167,26 @@ impl ProvisioningStore {
         let transaction = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let exists: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1)",
-            [actor.0.to_string()],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            return Err(ProvisioningError::Forbidden);
+        let is_admin: bool = transaction
+            .query_row(
+                "SELECT is_admin FROM users WHERE id = ?1",
+                [actor.0.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(ProvisioningError::Forbidden)?;
+        // Administrators may install unqualified revisions to qualify them; everyone else needs
+        // an administrator's attestation (or the agent's) that the revision actually runs.
+        let qualified = host.qualified_revisions.contains(&request.egg_revision)
+            || transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM egg_qualifications WHERE revision_id = ?1)",
+                [request.egg_revision.0.to_string()],
+                |row| row.get::<_, bool>(0),
+            )?;
+        if !qualified && !is_admin {
+            return Err(ProvisioningError::HostNotReady(
+                "egg runtime has not been qualified",
+            ));
         }
         let encoded: String = transaction
             .query_row(
@@ -241,6 +249,10 @@ impl ProvisioningStore {
         transaction.execute(
             "INSERT INTO server_allocations VALUES (?1, ?2, 1)",
             params![id.0.to_string(), request.allocation_id.to_string()],
+        )?;
+        transaction.execute(
+            "INSERT INTO server_runtime (server_id, license_accepted) VALUES (?1, ?2)",
+            params![id.0.to_string(), request.license_accepted],
         )?;
         transaction.commit()?;
         Ok(CreatedServer {

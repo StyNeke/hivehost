@@ -23,6 +23,22 @@ impl AgentClient {
             expected_uid,
         }
     }
+    // Sends one operation and returns the agent's typed result after checking it answers this request.
+    pub async fn call(&self, operation: Operation) -> io::Result<AgentResult> {
+        let request_id = Uuid::new_v4();
+        let reply = tokio::time::timeout(
+            EXCHANGE_TIMEOUT,
+            self.exchange(&AgentRequest {
+                version: VERSION,
+                request_id,
+                operation,
+            }),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent did not reply in time"))??;
+        decode_response(request_id, &reply)
+    }
+
     pub async fn inspect_host(&self) -> io::Result<HostStatus> {
         let request_id = Uuid::new_v4();
         let reply = tokio::time::timeout(
@@ -84,6 +100,24 @@ impl AgentClient {
             "the host agent requires Linux",
         ))
     }
+}
+
+pub fn decode_response(expected_request: Uuid, bytes: &[u8]) -> io::Result<AgentResult> {
+    if bytes.is_empty() || bytes.len() > MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid agent response length",
+        ));
+    }
+    let response: AgentResponse = serde_json::from_slice(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid agent response"))?;
+    if response.version != VERSION || response.request_id != expected_request {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "agent response does not match request",
+        ));
+    }
+    Ok(response.result)
 }
 
 pub fn decode_host_status(expected_request: Uuid, bytes: &[u8]) -> io::Result<HostStatus> {

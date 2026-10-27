@@ -4,7 +4,7 @@ use crate::eggs::{EggStore, EggSummary, LibraryError};
 use crate::provisioning::{
     Allocation, CreateServer, CreatedServer, PortBinding, ProvisioningError, ProvisioningStore,
 };
-use crate::servers::{ServerError, ServerRecord, ServerStore, ServerSummary};
+use crate::servers::{ServerError, ServerStore, ServerSummary};
 use axum::{
     Json, Router,
     body::Bytes,
@@ -38,7 +38,11 @@ struct AppState {
     auth_slots: Arc<Semaphore>,
     attempts: Arc<Mutex<VecDeque<Instant>>>,
     agent: Option<AgentClient>,
+    modrinth: crate::modrinth::Modrinth,
 }
+
+#[path = "http_server_routes.rs"]
+mod server_routes;
 
 type ApiError = (StatusCode, Json<ErrorBody>);
 
@@ -240,21 +244,29 @@ impl AppState {
 }
 
 // Without an agent, host-dependent routes fail closed with host_unavailable/host_not_ready.
+pub const MODRINTH_API: &str = "https://api.modrinth.com/v2";
+
 pub fn router(database: PathBuf, origin: String) -> Router {
-    build_router(database, origin, None)
+    router_with_services(database, origin, None, MODRINTH_API)
 }
 
 pub fn router_with_agent(database: PathBuf, origin: String, agent: AgentClient) -> Router {
-    build_router(database, origin, Some(agent))
+    router_with_services(database, origin, Some(agent), MODRINTH_API)
 }
 
-fn build_router(database: PathBuf, origin: String, agent: Option<AgentClient>) -> Router {
+pub fn router_with_services(
+    database: PathBuf,
+    origin: String,
+    agent: Option<AgentClient>,
+    modrinth_api: &str,
+) -> Router {
     let state = AppState {
         database,
         origin,
         auth_slots: Arc::new(Semaphore::new(4)),
         attempts: Arc::new(Mutex::new(VecDeque::new())),
         agent,
+        modrinth: crate::modrinth::Modrinth::new(modrinth_api),
     };
     Router::new()
         .route("/api/login", post(login))
@@ -263,7 +275,36 @@ fn build_router(database: PathBuf, origin: String, agent: Option<AgentClient>) -
         .route("/api/invites", post(invite))
         .route("/api/session", get(session))
         .route("/api/servers", get(list_servers).post(create_server))
-        .route("/api/servers/{id}", get(get_server))
+        .route(
+            "/api/servers/{id}",
+            get(server_routes::detail).delete(server_routes::delete),
+        )
+        .route("/api/servers/{id}/power", post(server_routes::power))
+        .route(
+            "/api/servers/{id}/console",
+            get(server_routes::console).post(server_routes::command),
+        )
+        .route(
+            "/api/servers/{id}/reinstall",
+            post(server_routes::reinstall),
+        )
+        .route("/api/servers/{id}/activity", get(server_routes::activity))
+        .route(
+            "/api/servers/{id}/extensions",
+            get(server_routes::extensions).post(server_routes::add_extension),
+        )
+        .route(
+            "/api/servers/{id}/extensions/{project}",
+            axum::routing::delete(server_routes::remove_extension),
+        )
+        .route(
+            "/api/servers/{id}/modrinth",
+            get(server_routes::search_modrinth),
+        )
+        .route(
+            "/api/eggs/revisions/{id}/qualification",
+            post(server_routes::qualify_revision),
+        )
         .route("/api/host", get(host_overview))
         .route(
             "/api/allocations",
@@ -534,19 +575,6 @@ async fn list_servers(
 ) -> Result<Json<Vec<ServerSummary>>, ApiError> {
     state
         .servers(&headers, |store, actor| store.list(actor))
-        .await
-        .map(Json)
-}
-
-async fn get_server(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    headers: HeaderMap,
-) -> Result<Json<ServerRecord>, ApiError> {
-    state
-        .servers(&headers, move |store, actor| {
-            store.require_access(actor, ServerId(id))
-        })
         .await
         .map(Json)
 }

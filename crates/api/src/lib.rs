@@ -5,5 +5,8 @@ pub mod database;
 pub mod eggs;
 pub mod http;
 pub mod jobs;
+pub mod modrinth;
 pub mod provisioning;
+pub mod runtime;
 pub mod servers;
+pub mod worker;

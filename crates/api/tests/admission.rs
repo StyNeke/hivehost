@@ -240,3 +240,52 @@ fn pools_require_admin_owned_ips_and_conflict_checks_then_claim_ports_once() {
         Err(ProvisioningError::AllocationUnavailable)
     ));
 }
+
+#[test]
+fn qualification_comes_from_administrators_who_may_test_unqualified_revisions() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("app.sqlite");
+    let (admin, member, revision, mut host) = setup(&path);
+    host.qualified_revisions.clear();
+    let mut store = ProvisioningStore::open(&path).unwrap();
+    let allocations: Vec<_> = [25600, 25601, 25602]
+        .into_iter()
+        .map(|port| {
+            store
+                .add_allocation(admin, binding(port), &host, 100)
+                .unwrap()
+        })
+        .collect();
+    let small = |allocation| CreateServer {
+        limits: resources(1),
+        ..request(revision, allocation)
+    };
+    assert!(matches!(
+        store.create(member, small(allocations[0]), &host, 101),
+        Err(ProvisioningError::HostNotReady(
+            "egg runtime has not been qualified"
+        ))
+    ));
+    let tested = store
+        .create(admin, small(allocations[0]), &host, 101)
+        .unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO egg_qualifications VALUES (?1, ?2, 101)",
+            rusqlite::params![revision.0.to_string(), admin.0.to_string()],
+        )
+        .unwrap();
+    store
+        .create(member, small(allocations[1]), &host, 101)
+        .unwrap();
+    let license: bool = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT license_accepted FROM server_runtime WHERE server_id = ?1 AND install_state = 'pending'",
+            [tested.id.0.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(license);
+}

@@ -2,7 +2,7 @@ use manager_api::{
     agent_client::AgentClient,
     auth::AuthStore,
     config::validate_listener,
-    http::{router, router_with_agent},
+    http::{MODRINTH_API, router_with_services},
     jobs::JobStore,
 };
 use std::{env, path::PathBuf};
@@ -32,24 +32,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     AuthStore::open(&database)?;
     JobStore::open(&database)?;
     // The agent's UID is required so a process that merely creates the socket path is not trusted.
-    let app = match env::var("GM_AGENT_SOCKET") {
+    let agent = match env::var("GM_AGENT_SOCKET") {
         Ok(socket) => {
             let uid: u32 = env::var("GM_AGENT_UID")
                 .map_err(|_| "GM_AGENT_UID must identify the host agent service user")?
                 .parse()?;
-            router_with_agent(
-                database,
-                origin.clone(),
-                AgentClient::new(&PathBuf::from(socket), uid),
-            )
+            Some(AgentClient::new(&PathBuf::from(socket), uid))
         }
         Err(_) => {
             println!(
                 "GM_AGENT_SOCKET is not set; host-dependent routes will report the host as unavailable"
             );
-            router(database, origin.clone())
+            None
         }
     };
+    let modrinth = env::var("GM_MODRINTH_API").unwrap_or_else(|_| MODRINTH_API.into());
+    if !modrinth.starts_with("https://") {
+        return Err("GM_MODRINTH_API must be an https:// URL".into());
+    }
+    // Installs and deletions are durable jobs; the worker resumes them after a restart.
+    if let Some(agent) = agent.clone() {
+        tokio::spawn(manager_api::worker::run(database.clone(), agent));
+    }
+    let app = router_with_services(database, origin.clone(), agent, &modrinth);
     let listener = tokio::net::TcpListener::bind(address).await?;
     println!("API listening on {address}; expected private HTTPS origin: {origin}");
     axum::serve(listener, app)

@@ -1,7 +1,7 @@
 use rusqlite::{Connection, TransactionBehavior};
 use std::{path::Path, time::Duration};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let mut connection = Connection::open(path)?;
@@ -29,6 +29,8 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         include_str!("../migrations/0004_servers.sql"),
         "\n",
         include_str!("../migrations/0005_admission.sql"),
+        "\n",
+        include_str!("../migrations/0006_runtime.sql"),
     ))?;
     transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     transaction.commit()?;

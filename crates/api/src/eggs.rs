@@ -104,7 +104,9 @@ impl EggStore {
 
     pub fn list(&self) -> Result<Vec<EggSummary>, LibraryError> {
         let mut statement = self.0.prepare(
-            "SELECT egg_id, name, id FROM egg_revisions r WHERE sequence =
+            "SELECT egg_id, name, id,
+                    EXISTS(SELECT 1 FROM egg_qualifications q WHERE q.revision_id = r.id)
+             FROM egg_revisions r WHERE sequence =
              (SELECT max(sequence) FROM egg_revisions WHERE egg_id = r.egg_id) ORDER BY name, egg_id",
         )?;
         let rows = statement.query_map([], |row| {
@@ -112,17 +114,18 @@ impl EggStore {
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })?;
         rows.map(|row| {
-            let (id, name, revision) = row?;
+            let (id, name, revision, runtime_qualified) = row?;
             Ok(EggSummary {
                 id: Uuid::parse_str(&id).map_err(|_| LibraryError::InvalidRevision)?,
                 name,
                 revision: EggRevisionId(
                     Uuid::parse_str(&revision).map_err(|_| LibraryError::InvalidRevision)?,
                 ),
-                runtime_qualified: false,
+                runtime_qualified,
             })
         })
         .collect()

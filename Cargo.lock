@@ -768,6 +768,7 @@ dependencies = [
  "axum",
  "manager-core",
  "manager-protocol",
+ "reqwest",
  "rpassword",
  "rusqlite",
  "serde",
