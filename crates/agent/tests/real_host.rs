@@ -13,13 +13,17 @@ async fn docker_and_hardware_probe_matches_the_actual_linux_host() {
     let config = AgentConfig {
         data_root: directory.path().to_owned(),
         private_ips,
+        ..Default::default()
     };
-    let status = inspect_host(&config).await.unwrap();
+    let status = inspect_host(&config, &Default::default(), 0).await.unwrap();
     assert!(status.hardware.memory_bytes > 0);
     assert!(status.hardware.cpu_millis >= 1000);
     assert!(status.hardware.disk_available_bytes <= status.hardware.disk_total_bytes);
-    assert!(!status.admission.disk_quotas_ready);
-    assert!(!status.blockers.is_empty());
+    // Quotas are ready only with root, e2fsprogs and the data directory; otherwise there is no disk budget.
+    if !status.admission.disk_quotas_ready {
+        assert_eq!(status.admission.budget.disk_bytes, 0);
+        assert!(!status.blockers.is_empty());
+    }
     if !config.private_ips.is_empty() {
         assert_eq!(status.admission.private_ips, config.private_ips);
     }

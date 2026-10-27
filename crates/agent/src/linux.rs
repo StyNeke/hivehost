@@ -24,7 +24,7 @@ pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
 pub async fn serve_connection(
     mut stream: UnixStream,
     expected_uid: u32,
-    config: std::sync::Arc<crate::host::AgentConfig>,
+    runtime: std::sync::Arc<crate::runtime::Runtime>,
 ) -> io::Result<()> {
     authorize_peer(stream.peer_cred()?.uid(), expected_uid)?;
     let request =
@@ -33,10 +33,10 @@ pub async fn serve_connection(
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent request timed out"))??;
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(25),
-        dispatch(request, &config),
+        dispatch(request, &runtime),
     )
     .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "host inspection timed out"))?;
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent operation timed out"))?;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let encoded = serde_json::to_vec(&response).map_err(io::Error::other)?;
         if encoded.len() > manager_protocol::MAX_FRAME_BYTES {

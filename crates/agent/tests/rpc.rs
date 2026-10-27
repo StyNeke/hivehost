@@ -24,7 +24,9 @@ async fn valid_ping_roundtrips_and_unknown_protocol_fails_explicitly() {
     writer.write_all(&encoded).await.unwrap();
     let response = dispatch(
         read_request(reader).await.unwrap(),
-        &manager_agent::host::AgentConfig::default(),
+        &std::sync::Arc::new(manager_agent::runtime::Runtime::new(
+            manager_agent::host::AgentConfig::default(),
+        )),
     )
     .await;
     assert_eq!(response.request_id, id);
@@ -35,9 +37,14 @@ async fn valid_ping_roundtrips_and_unknown_protocol_fails_explicitly() {
         operation: Operation::InspectHost,
     };
     assert_eq!(
-        dispatch(request, &manager_agent::host::AgentConfig::default())
-            .await
-            .result,
+        dispatch(
+            request,
+            &std::sync::Arc::new(manager_agent::runtime::Runtime::new(
+                manager_agent::host::AgentConfig::default(),
+            )),
+        )
+        .await
+        .result,
         AgentResult::UnsupportedVersion
     );
 }

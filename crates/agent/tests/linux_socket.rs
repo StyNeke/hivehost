@@ -13,7 +13,9 @@ use uuid::Uuid;
 async fn actual_linux_peer_credentials_gate_requests() {
     let (server, mut client) = UnixStream::pair().unwrap();
     let uid = server.peer_cred().unwrap().uid();
-    let config = std::sync::Arc::new(manager_agent::host::AgentConfig::default());
+    let config = std::sync::Arc::new(manager_agent::runtime::Runtime::new(
+        manager_agent::host::AgentConfig::default(),
+    ));
     let task = tokio::spawn(serve_connection(server, uid, config.clone()));
     let request = AgentRequest {
         version: VERSION,

@@ -5,6 +5,15 @@ use std::{io, net::IpAddr, path::PathBuf};
 pub struct AgentConfig {
     pub data_root: PathBuf,
     pub private_ips: Vec<IpAddr>,
+    // Each server gets its own UID, starting here; keep the range clear of real accounts.
+    pub uid_base: u32,
+    // Optional HTTP(S) proxy for installer/game containers on hosts with filtered egress.
+    pub container_proxy: Option<(String, u16)>,
+    pub disk_reserve_bytes: u64,
+    pub network_name: String,
+    pub network_subnet: String,
+    pub stop_grace_secs: u64,
+    pub docker_socket: PathBuf,
 }
 
 impl Default for AgentConfig {
@@ -12,8 +21,82 @@ impl Default for AgentConfig {
         Self {
             data_root: "/var/lib/game-manager".into(),
             private_ips: vec![],
+            uid_base: 200_000,
+            container_proxy: None,
+            disk_reserve_bytes: 10 * 1024 * 1024 * 1024,
+            network_name: "gm-games".into(),
+            network_subnet: "172.30.250.0/24".into(),
+            stop_grace_secs: 120,
+            docker_socket: "/var/run/docker.sock".into(),
         }
     }
+}
+
+// Accepts http://host:port only; credentials or paths in the proxy URL are refused.
+pub fn parse_proxy(value: &str) -> Result<(String, u16), &'static str> {
+    let rest = value
+        .strip_prefix("http://")
+        .ok_or("GM_CONTAINER_PROXY must be http://host:port")?;
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    let (host, port) = rest
+        .rsplit_once(':')
+        .ok_or("GM_CONTAINER_PROXY must include a port")?;
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    {
+        return Err("GM_CONTAINER_PROXY host is invalid");
+    }
+    let port = port
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p != 0)
+        .ok_or("GM_CONTAINER_PROXY port is invalid")?;
+    Ok((host.to_owned(), port))
+}
+
+// Containers count as this application's own only when their label names a server in the
+// agent's registry; a foreign container carrying the label is still treated as legacy.
+#[cfg(target_os = "linux")]
+async fn owned_container_ids(
+    docker_config: &std::path::Path,
+    owned: &std::collections::HashSet<uuid::Uuid>,
+) -> io::Result<std::collections::HashSet<String>> {
+    use std::ffi::OsString;
+    let mut ids = std::collections::HashSet::new();
+    for label in [crate::runtime::SERVER_LABEL, crate::runtime::INSTALL_LABEL] {
+        let output = crate::commands::run_checked(
+            std::path::Path::new("/usr/bin/docker"),
+            &[
+                OsString::from("--host"),
+                OsString::from("unix:///var/run/docker.sock"),
+                OsString::from("--config"),
+                docker_config.as_os_str().to_owned(),
+                OsString::from("ps"),
+                OsString::from("--all"),
+                OsString::from("--no-trunc"),
+                OsString::from("--filter"),
+                OsString::from(format!("label={label}")),
+                OsString::from("--format"),
+                OsString::from(format!("{{{{.ID}}}} {{{{.Label \"{label}\"}}}}")),
+            ],
+            std::time::Duration::from_secs(10),
+            256 * 1024,
+        )
+        .await?;
+        for line in String::from_utf8_lossy(&output).lines() {
+            if let Some((id, server)) = line.split_once(' ')
+                && crate::docker::valid_container_id(id)
+                && server
+                    .parse::<uuid::Uuid>()
+                    .is_ok_and(|server| owned.contains(&server))
+            {
+                ids.insert(id.to_owned());
+            }
+        }
+    }
+    Ok(ids)
 }
 
 fn invalid() -> io::Error {
@@ -87,10 +170,16 @@ pub fn configured_local_ips(input: &[u8], configured: &[IpAddr]) -> io::Result<V
         .collect())
 }
 
-pub async fn inspect_host(config: &AgentConfig) -> io::Result<manager_core::host::HostStatus> {
+// `owned` lists this agent's server IDs and `owned_image_bytes` the space their storage images
+// already hold; both come from the agent's registry, never from container metadata alone.
+pub async fn inspect_host(
+    config: &AgentConfig,
+    owned: &std::collections::HashSet<uuid::Uuid>,
+    owned_image_bytes: u64,
+) -> io::Result<manager_core::host::HostStatus> {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = config;
+        let _ = (config, owned, owned_image_bytes);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "host inspection requires Linux",
@@ -104,7 +193,6 @@ pub async fn inspect_host(config: &AgentConfig) -> io::Result<manager_core::host
             host::{HostAdmission, HostHardware, HostStatus},
         };
         use std::{
-            collections::HashSet,
             ffi::OsString,
             path::Path,
             time::{Duration, SystemTime, UNIX_EPOCH},
@@ -135,8 +223,7 @@ pub async fn inspect_host(config: &AgentConfig) -> io::Result<manager_core::host
             OsString::from("show"),
         ];
         let docker_config = config.data_root.join("docker-client");
-        // shortcut: all containers count as legacy until game operations add the ownership registry.
-        let owned_ids = HashSet::new();
+        let owned_ids = owned_container_ids(&docker_config, owned).await?;
         let (disk, addresses, inventory) = tokio::try_join!(
             run_checked(
                 Path::new("/usr/bin/df"),
@@ -155,15 +242,31 @@ pub async fn inspect_host(config: &AgentConfig) -> io::Result<manager_core::host
             .ok()
             .and_then(|d| i64::try_from(d.as_secs()).ok())
             .ok_or_else(invalid)?;
+        // SAFETY: geteuid has no preconditions.
+        let disk_quotas_ready = unsafe { libc::geteuid() } == 0
+            && crate::storage::quota_tools_available()
+            && disk_root == config.data_root.as_path();
         let budget = Resources {
             memory_bytes: memory.saturating_sub(4 * 1024 * 1024 * 1024),
             cpu_millis: cpu.saturating_sub(1000),
-            disk_bytes: 0,
+            disk_bytes: if disk_quotas_ready {
+                crate::storage::disk_budget(
+                    disk_available_bytes,
+                    config.disk_reserve_bytes,
+                    owned_image_bytes,
+                )
+            } else {
+                0
+            },
         };
-        let mut blockers = vec![
-            "Storage quota setup has not been qualified".into(),
-            "Game runtime installation has not been qualified".into(),
-        ];
+        let mut blockers: Vec<String> = vec![];
+        if !disk_quotas_ready {
+            blockers.push(
+                "Per-server disk quotas are unavailable: the agent must run as root with e2fsprogs and an existing data directory".into(),
+            );
+        } else if budget.disk_bytes == 0 {
+            blockers.push("No disk space is left above the configured reserve".into());
+        }
         if private_ips.is_empty() {
             blockers.push("No configured private IP is present on this host".into());
         }
@@ -184,7 +287,7 @@ pub async fn inspect_host(config: &AgentConfig) -> io::Result<manager_core::host
                 measured_at,
                 budget,
                 legacy_reserved: inventory.legacy_reserved,
-                disk_quotas_ready: false,
+                disk_quotas_ready,
                 qualified_revisions: vec![],
                 private_ips,
                 unavailable_bindings: inventory.unavailable_bindings,

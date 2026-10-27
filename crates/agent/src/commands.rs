@@ -25,6 +25,23 @@ pub async fn read_limited(reader: impl AsyncRead + Unpin, limit: usize) -> io::R
     Ok(bytes)
 }
 
+// A short single-line excerpt of a failed command's stderr, without control characters.
+pub fn error_excerpt(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let mut excerpt: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(300)
+        .collect();
+    if excerpt.is_empty() {
+        excerpt.push_str("no error output");
+    }
+    excerpt
+}
+
 pub async fn run_checked(
     program: &Path,
     arguments: &[OsString],
@@ -59,13 +76,16 @@ pub async fn run_checked(
         .take()
         .ok_or_else(|| io::Error::other("stderr pipe unavailable"))?;
     let outcome = tokio::time::timeout(deadline, async {
-        let (output, _) = tokio::try_join!(
+        let (output, errors) = tokio::try_join!(
             read_limited(stdout, output_limit),
             read_limited(stderr, 16 * 1024)
         )?;
         let status = child.wait().await?;
         if !status.success() {
-            return Err(io::Error::other("host command exited unsuccessfully"));
+            return Err(io::Error::other(format!(
+                "host command exited unsuccessfully: {}",
+                error_excerpt(&errors)
+            )));
         }
         Ok(output)
     })
