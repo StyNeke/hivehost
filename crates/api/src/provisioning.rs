@@ -25,6 +25,13 @@ pub struct CreateServer {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Allocation {
+    pub id: Uuid,
+    #[serde(flatten)]
+    pub binding: PortBinding,
+}
+
+#[derive(Debug, Serialize)]
 pub struct CreatedServer {
     pub id: ServerId,
     pub job_id: JobId,
@@ -56,6 +63,35 @@ pub enum ProvisioningError {
 impl ProvisioningStore {
     pub fn open(path: &Path) -> Result<Self, ProvisioningError> {
         Ok(Self(crate::database::open(path)?))
+    }
+
+    // Total held by managed servers, stopped or running; legacy containers are added by the caller.
+    pub fn reserved(&self) -> Result<Resources, ProvisioningError> {
+        server_reservations(&self.0)
+    }
+
+    pub fn free_allocations(&self) -> Result<Vec<Allocation>, ProvisioningError> {
+        let mut statement = self.0.prepare(
+            "SELECT id, host_ip, port, transport FROM allocation_pool p
+             WHERE NOT EXISTS (SELECT 1 FROM server_allocations a WHERE a.allocation_id = p.id)
+             ORDER BY host_ip, port, transport",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u16>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, ip, port, transport) = row?;
+            Ok(Allocation {
+                id: id.parse().map_err(|_| rusqlite::Error::InvalidQuery)?,
+                binding: stored_binding(&ip, port, &transport)?,
+            })
+        })
+        .collect()
     }
 
     pub fn add_allocation(
@@ -178,18 +214,8 @@ impl ProvisioningStore {
             )
             .optional()?
             .ok_or(ProvisioningError::AllocationUnavailable)?;
-        let binding = PortBinding {
-            ip: record
-                .0
-                .parse()
-                .map_err(|_| ProvisioningError::AllocationUnavailable)?,
-            port: record.1,
-            transport: match record.2.as_str() {
-                "tcp" => Transport::Tcp,
-                "udp" => Transport::Udp,
-                _ => return Err(ProvisioningError::AllocationUnavailable),
-            },
-        };
+        let binding = stored_binding(&record.0, record.1, &record.2)
+            .map_err(|_| ProvisioningError::AllocationUnavailable)?;
         check_binding(&binding, host)?;
         let incomplete: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM servers s WHERE NOT EXISTS (SELECT 1 FROM server_provisioning p WHERE p.server_id = s.id))", [], |row| row.get(0))?;
         if incomplete {
@@ -197,23 +223,7 @@ impl ProvisioningStore {
                 "existing server reservations need reconciliation",
             ));
         }
-        let mut reserved = host.legacy_reserved;
-        {
-            let mut statement = transaction
-                .prepare("SELECT memory_bytes, disk_bytes, cpu_millis FROM server_provisioning")?;
-            let rows = statement.query_map([], |row| {
-                Ok(Resources {
-                    memory_bytes: u64::try_from(row.get::<_, i64>(0)?)
-                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    disk_bytes: u64::try_from(row.get::<_, i64>(1)?)
-                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    cpu_millis: row.get(2)?,
-                })
-            })?;
-            for row in rows {
-                reserved = add_reserved(reserved, row?)?;
-            }
-        }
+        let reserved = add_reserved(host.legacy_reserved, server_reservations(&transaction)?)?;
         admit(request.limits, host.budget, reserved).map_err(ProvisioningError::Capacity)?;
         let id = ServerId(Uuid::new_v4());
         let job_id = JobId(Uuid::new_v4());
@@ -250,6 +260,41 @@ fn fresh_snapshot(host: &HostAdmission, now: i64) -> Result<(), ProvisioningErro
         ));
     }
     Ok(())
+}
+
+fn stored_binding(ip: &str, port: u16, transport: &str) -> Result<PortBinding, rusqlite::Error> {
+    Ok(PortBinding {
+        ip: ip.parse().map_err(|_| rusqlite::Error::InvalidQuery)?,
+        port,
+        transport: match transport {
+            "tcp" => Transport::Tcp,
+            "udp" => Transport::Udp,
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        },
+    })
+}
+
+fn server_reservations(connection: &Connection) -> Result<Resources, ProvisioningError> {
+    let mut statement = connection
+        .prepare("SELECT memory_bytes, disk_bytes, cpu_millis FROM server_provisioning")?;
+    let rows = statement.query_map([], |row| {
+        Ok(Resources {
+            memory_bytes: u64::try_from(row.get::<_, i64>(0)?)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            disk_bytes: u64::try_from(row.get::<_, i64>(1)?)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            cpu_millis: row.get(2)?,
+        })
+    })?;
+    let mut reserved = Resources {
+        memory_bytes: 0,
+        disk_bytes: 0,
+        cpu_millis: 0,
+    };
+    for row in rows {
+        reserved = add_reserved(reserved, row?)?;
+    }
+    Ok(reserved)
 }
 
 fn transport_name(transport: Transport) -> &'static str {

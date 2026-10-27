@@ -1,4 +1,10 @@
-use manager_api::{auth::AuthStore, config::validate_listener, http::router, jobs::JobStore};
+use manager_api::{
+    agent_client::AgentClient,
+    auth::AuthStore,
+    config::validate_listener,
+    http::{router, router_with_agent},
+    jobs::JobStore,
+};
 use std::{env, path::PathBuf};
 
 #[tokio::main]
@@ -25,9 +31,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = validate_listener(&bind, &origin)?;
     AuthStore::open(&database)?;
     JobStore::open(&database)?;
+    // The agent's UID is required so a process that merely creates the socket path is not trusted.
+    let app = match env::var("GM_AGENT_SOCKET") {
+        Ok(socket) => {
+            let uid: u32 = env::var("GM_AGENT_UID")
+                .map_err(|_| "GM_AGENT_UID must identify the host agent service user")?
+                .parse()?;
+            router_with_agent(
+                database,
+                origin.clone(),
+                AgentClient::new(&PathBuf::from(socket), uid),
+            )
+        }
+        Err(_) => {
+            println!(
+                "GM_AGENT_SOCKET is not set; host-dependent routes will report the host as unavailable"
+            );
+            router(database, origin.clone())
+        }
+    };
     let listener = tokio::net::TcpListener::bind(address).await?;
     println!("API listening on {address}; expected private HTTPS origin: {origin}");
-    axum::serve(listener, router(database, origin))
+    axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

@@ -1,5 +1,9 @@
+use crate::agent_client::AgentClient;
 use crate::auth::{AuthError, AuthStore};
 use crate::eggs::{EggStore, EggSummary, LibraryError};
+use crate::provisioning::{
+    Allocation, CreateServer, CreatedServer, PortBinding, ProvisioningError, ProvisioningStore,
+};
 use crate::servers::{ServerError, ServerRecord, ServerStore, ServerSummary};
 use axum::{
     Json, Router,
@@ -11,11 +15,14 @@ use axum::{
     routing::{get, post},
 };
 use manager_core::{
+    capacity::{CapacityError, Resources},
     eggs::CompatibilityIssue,
+    host::{HostHardware, HostStatus},
     model::{EggRevisionId, ServerId, UserId},
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -30,6 +37,7 @@ struct AppState {
     origin: String,
     auth_slots: Arc<Semaphore>,
     attempts: Arc<Mutex<VecDeque<Instant>>>,
+    agent: Option<AgentClient>,
 }
 
 type ApiError = (StatusCode, Json<ErrorBody>);
@@ -37,7 +45,7 @@ type ApiError = (StatusCode, Json<ErrorBody>);
 #[derive(Serialize)]
 struct ErrorBody {
     code: &'static str,
-    message: &'static str,
+    message: Cow<'static, str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     details: Option<Vec<CompatibilityIssue>>,
 }
@@ -47,7 +55,7 @@ fn error(status: StatusCode, code: &'static str, message: &'static str) -> ApiEr
         status,
         Json(ErrorBody {
             code,
-            message,
+            message: Cow::Borrowed(message),
             details: None,
         }),
     )
@@ -149,6 +157,52 @@ impl AppState {
         .await
         .map_err(|_| storage_error())?
     }
+    // Host state is fetched per request and never cached, so admission always sees a fresh snapshot.
+    async fn host_status(&self) -> Result<HostStatus, ApiError> {
+        let agent = self.agent.as_ref().ok_or_else(|| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "host_unavailable",
+                "The host agent is not configured",
+            )
+        })?;
+        agent.inspect_host().await.map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "host_unavailable",
+                "The host agent did not return a trustworthy status",
+            )
+        })
+    }
+
+    async fn provisioning<T: Send + 'static>(
+        &self,
+        headers: &HeaderMap,
+        action: impl FnOnce(
+            &mut ProvisioningStore,
+            UserId,
+            &HostStatus,
+            i64,
+        ) -> Result<T, ProvisioningError>
+        + Send
+        + 'static,
+    ) -> Result<T, ApiError> {
+        // Authenticate before asking the agent so anonymous requests cannot trigger host inspection.
+        self.authenticated(headers, |_, _| Ok(())).await?;
+        let status = self.host_status().await?;
+        self.authenticated(headers, move |path, actor| {
+            let now = now()?;
+            action(
+                &mut ProvisioningStore::open(path).map_err(provisioning_error)?,
+                actor,
+                &status,
+                now,
+            )
+            .map_err(provisioning_error)
+        })
+        .await
+    }
+
     async fn auth<T: Send + 'static>(
         &self,
         action: impl FnOnce(&mut AuthStore) -> Result<T, AuthError> + Send + 'static,
@@ -185,12 +239,22 @@ impl AppState {
     }
 }
 
+// Without an agent, host-dependent routes fail closed with host_unavailable/host_not_ready.
 pub fn router(database: PathBuf, origin: String) -> Router {
+    build_router(database, origin, None)
+}
+
+pub fn router_with_agent(database: PathBuf, origin: String, agent: AgentClient) -> Router {
+    build_router(database, origin, Some(agent))
+}
+
+fn build_router(database: PathBuf, origin: String, agent: Option<AgentClient>) -> Router {
     let state = AppState {
         database,
         origin,
         auth_slots: Arc::new(Semaphore::new(4)),
         attempts: Arc::new(Mutex::new(VecDeque::new())),
+        agent,
     };
     Router::new()
         .route("/api/login", post(login))
@@ -200,6 +264,11 @@ pub fn router(database: PathBuf, origin: String) -> Router {
         .route("/api/session", get(session))
         .route("/api/servers", get(list_servers).post(create_server))
         .route("/api/servers/{id}", get(get_server))
+        .route("/api/host", get(host_overview))
+        .route(
+            "/api/allocations",
+            get(list_allocations).post(add_allocation),
+        )
         .route(
             "/api/servers/{id}/members/{user_id}",
             axum::routing::put(set_member),
@@ -383,7 +452,9 @@ fn library_error(err: LibraryError) -> ApiError {
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorBody {
                 code: "unsupported_egg",
-                message: "Egg could not be imported; review the compatibility details",
+                message: Cow::Borrowed(
+                    "Egg could not be imported; review the compatibility details",
+                ),
                 details: Some(issues),
             }),
         ),
@@ -499,18 +570,162 @@ async fn set_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn provisioning_error(err: ProvisioningError) -> ApiError {
+    match err {
+        ProvisioningError::HostNotReady(message) => {
+            error(StatusCode::SERVICE_UNAVAILABLE, "host_not_ready", message)
+        }
+        ProvisioningError::InvalidInput(message) => {
+            error(StatusCode::BAD_REQUEST, "invalid_input", message)
+        }
+        // Egg variable rules come from the shared library, so echoing them reveals nothing private.
+        ProvisioningError::Variable(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                code: "invalid_variable",
+                message: Cow::Owned(message),
+                details: None,
+            }),
+        ),
+        ProvisioningError::Capacity(CapacityError::InvalidRequest) => error(
+            StatusCode::BAD_REQUEST,
+            "invalid_input",
+            "CPU, RAM and disk limits must all be greater than zero",
+        ),
+        ProvisioningError::Capacity(CapacityError::Memory) => error(
+            StatusCode::CONFLICT,
+            "capacity_exceeded",
+            "Not enough RAM remains in the safe host budget",
+        ),
+        ProvisioningError::Capacity(CapacityError::Disk) => error(
+            StatusCode::CONFLICT,
+            "capacity_exceeded",
+            "Not enough disk remains in the safe host budget",
+        ),
+        ProvisioningError::Capacity(CapacityError::Cpu) => error(
+            StatusCode::CONFLICT,
+            "capacity_exceeded",
+            "Not enough CPU remains in the safe host budget",
+        ),
+        ProvisioningError::Forbidden => error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Administrator access required",
+        ),
+        ProvisioningError::AllocationUnavailable => error(
+            StatusCode::CONFLICT,
+            "allocation_unavailable",
+            "That IP and port are not available",
+        ),
+        ProvisioningError::NotFound => {
+            error(StatusCode::NOT_FOUND, "not_found", "Egg revision not found")
+        }
+        ProvisioningError::Storage(_) => storage_error(),
+    }
+}
+
+// Capacity explanation for every signed-in user; private IPs and port bindings stay admin data.
+#[derive(Serialize)]
+struct HostOverview {
+    measured_at: i64,
+    ready: bool,
+    blockers: Vec<String>,
+    hardware: HostHardware,
+    budget: Resources,
+    reserved: Resources,
+    remaining: Resources,
+}
+
+async fn host_overview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<HostOverview>, ApiError> {
+    state
+        .provisioning(&headers, |store, _, status, _| {
+            let servers = store.reserved()?;
+            let admission = &status.admission;
+            let reserved = Resources {
+                memory_bytes: admission
+                    .legacy_reserved
+                    .memory_bytes
+                    .saturating_add(servers.memory_bytes),
+                disk_bytes: admission
+                    .legacy_reserved
+                    .disk_bytes
+                    .saturating_add(servers.disk_bytes),
+                cpu_millis: admission
+                    .legacy_reserved
+                    .cpu_millis
+                    .saturating_add(servers.cpu_millis),
+            };
+            Ok(HostOverview {
+                measured_at: admission.measured_at,
+                ready: admission.disk_quotas_ready && status.blockers.is_empty(),
+                blockers: status.blockers.clone(),
+                hardware: status.hardware.clone(),
+                budget: admission.budget,
+                reserved,
+                remaining: Resources {
+                    memory_bytes: admission
+                        .budget
+                        .memory_bytes
+                        .saturating_sub(reserved.memory_bytes),
+                    disk_bytes: admission
+                        .budget
+                        .disk_bytes
+                        .saturating_sub(reserved.disk_bytes),
+                    cpu_millis: admission
+                        .budget
+                        .cpu_millis
+                        .saturating_sub(reserved.cpu_millis),
+                },
+            })
+        })
+        .await
+        .map(Json)
+}
+
+async fn list_allocations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<Allocation>>, ApiError> {
+    state
+        .authenticated(&headers, |path, _| {
+            ProvisioningStore::open(path)
+                .and_then(|store| store.free_allocations())
+                .map_err(provisioning_error)
+        })
+        .await
+        .map(Json)
+}
+
+#[derive(Serialize)]
+struct AllocationCreated {
+    id: Uuid,
+}
+
+async fn add_allocation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(binding): Json<PortBinding>,
+) -> Result<(StatusCode, Json<AllocationCreated>), ApiError> {
+    let id = state
+        .provisioning(&headers, move |store, actor, status, now| {
+            store.add_allocation(actor, binding, &status.admission, now)
+        })
+        .await?;
+    Ok((StatusCode::CREATED, Json(AllocationCreated { id })))
+}
+
 async fn create_server(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<StatusCode, ApiError> {
-    // shortcut: fail closed until trusted agent capacity, quotas and runnable egg revisions are connected.
-    state
-        .authenticated(&headers, |_, _| {
-            Err(error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "host_not_ready",
-                "Finish host resource limits and storage setup before creating servers",
-            ))
+    Json(request): Json<CreateServer>,
+) -> Result<(StatusCode, Json<CreatedServer>), ApiError> {
+    let created = state
+        .provisioning(&headers, move |store, actor, status, now| {
+            store.create(actor, request, &status.admission, now)
         })
-        .await
+        .await?;
+    Ok((StatusCode::CREATED, Json(created)))
 }
