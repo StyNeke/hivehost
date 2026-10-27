@@ -1,0 +1,13 @@
+[package]
+name = "manager-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+manager-core = { path = "../core" }
+rusqlite.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
