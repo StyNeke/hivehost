@@ -22,15 +22,24 @@ async fn valid_ping_roundtrips_and_unknown_protocol_fails_explicitly() {
     let (mut writer, reader) = tokio::io::duplex(4096);
     writer.write_u32(encoded.len() as u32).await.unwrap();
     writer.write_all(&encoded).await.unwrap();
-    let response = dispatch(read_request(reader).await.unwrap());
+    let response = dispatch(
+        read_request(reader).await.unwrap(),
+        &manager_agent::host::AgentConfig::default(),
+    )
+    .await;
     assert_eq!(response.request_id, id);
     assert_eq!(response.result, AgentResult::Pong);
     let request = AgentRequest {
         version: VERSION + 1,
         request_id: id,
-        operation: Operation::Ping,
+        operation: Operation::InspectHost,
     };
-    assert_eq!(dispatch(request).result, AgentResult::UnsupportedVersion);
+    assert_eq!(
+        dispatch(request, &manager_agent::host::AgentConfig::default())
+            .await
+            .result,
+        AgentResult::UnsupportedVersion
+    );
 }
 
 #[tokio::test]

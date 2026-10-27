@@ -5,37 +5,12 @@ use manager_core::{
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, net::IpAddr, path::Path};
+use std::{collections::BTreeMap, path::Path};
 use uuid::Uuid;
 
 pub struct ProvisioningStore(Connection);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Transport {
-    Tcp,
-    Udp,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PortBinding {
-    pub ip: IpAddr,
-    pub port: u16,
-    pub transport: Transport,
-}
-
-// Trusted agent state, never a field in a browser creation request.
-#[derive(Debug, Clone)]
-pub struct HostAdmission {
-    pub measured_at: i64,
-    pub budget: Resources,
-    pub legacy_reserved: Resources,
-    pub disk_quotas_ready: bool,
-    pub qualified_revisions: Vec<EggRevisionId>,
-    pub private_ips: Vec<IpAddr>,
-    pub unavailable_bindings: Vec<PortBinding>,
-}
+pub use manager_core::host::{HostAdmission, PortBinding, Transport};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -289,14 +264,7 @@ fn transport_name(transport: Transport) -> &'static str {
 }
 
 fn check_binding(binding: &PortBinding, host: &HostAdmission) -> Result<(), ProvisioningError> {
-    let private = match binding.ip {
-        IpAddr::V4(ip) => {
-            ip.is_private()
-                || ip.is_loopback()
-                || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
-        }
-        IpAddr::V6(ip) => ip.is_unique_local() || ip.is_loopback(),
-    };
+    let private = manager_core::host::private_allocation_ip(binding.ip);
     if binding.port == 0 || !private || !host.private_ips.contains(&binding.ip) {
         return Err(ProvisioningError::InvalidInput(
             "allocation must use an approved private host IP and nonzero port",

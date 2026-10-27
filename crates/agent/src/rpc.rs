@@ -26,12 +26,18 @@ pub async fn read_request(mut reader: impl AsyncRead + Unpin) -> io::Result<Agen
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid request"))
 }
 
-pub fn dispatch(request: AgentRequest) -> AgentResponse {
+pub async fn dispatch(request: AgentRequest, config: &crate::host::AgentConfig) -> AgentResponse {
     let result = if request.version != VERSION {
         AgentResult::UnsupportedVersion
     } else {
         match request.operation {
             manager_protocol::Operation::Ping => AgentResult::Pong,
+            manager_protocol::Operation::InspectHost => {
+                match crate::host::inspect_host(config).await {
+                    Ok(status) => AgentResult::HostStatus(Box::new(status)),
+                    Err(_) => AgentResult::Unavailable,
+                }
+            }
         }
     };
     AgentResponse {

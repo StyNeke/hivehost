@@ -21,11 +21,30 @@ pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
     Ok(listener)
 }
-pub async fn serve_connection(mut stream: UnixStream, expected_uid: u32) -> io::Result<()> {
+pub async fn serve_connection(
+    mut stream: UnixStream,
+    expected_uid: u32,
+    config: std::sync::Arc<crate::host::AgentConfig>,
+) -> io::Result<()> {
     authorize_peer(stream.peer_cred()?.uid(), expected_uid)?;
+    let request =
+        tokio::time::timeout(std::time::Duration::from_secs(5), read_request(&mut stream))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent request timed out"))??;
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(25),
+        dispatch(request, &config),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "host inspection timed out"))?;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let response = dispatch(read_request(&mut stream).await?);
         let encoded = serde_json::to_vec(&response).map_err(io::Error::other)?;
+        if encoded.len() > manager_protocol::MAX_FRAME_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "agent response exceeds frame limit",
+            ));
+        }
         stream.write_u32(encoded.len() as u32).await?;
         stream.write_all(&encoded).await?;
         stream.shutdown().await

@@ -6,7 +6,8 @@ rust-version.workspace = true
 
 [dependencies]
 manager-protocol = { path = "../protocol" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "io-util", "sync"] }
+manager-core = { path = "../core" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "io-util", "sync", "process", "fs"] }
 serde = { workspace = true }
 serde_json = "1"
 uuid.workspace = true

@@ -1,3 +1,4 @@
+pub mod agent_client;
 pub mod auth;
 pub mod config;
 pub mod database;

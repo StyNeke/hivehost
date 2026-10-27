@@ -13,7 +13,8 @@ use uuid::Uuid;
 async fn actual_linux_peer_credentials_gate_requests() {
     let (server, mut client) = UnixStream::pair().unwrap();
     let uid = server.peer_cred().unwrap().uid();
-    let task = tokio::spawn(serve_connection(server, uid));
+    let config = std::sync::Arc::new(manager_agent::host::AgentConfig::default());
+    let task = tokio::spawn(serve_connection(server, uid, config.clone()));
     let request = AgentRequest {
         version: VERSION,
         request_id: Uuid::new_v4(),
@@ -31,7 +32,10 @@ async fn actual_linux_peer_credentials_gate_requests() {
     task.await.unwrap().unwrap();
     let (server, _client) = UnixStream::pair().unwrap();
     assert_eq!(
-        serve_connection(server, uid + 1).await.unwrap_err().kind(),
+        serve_connection(server, uid + 1, config)
+            .await
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::PermissionDenied
     );
 }

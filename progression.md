@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-27 (Europe/Amsterdam).
 
-**Active work continues.** The user clarified that this is a continuously maintained progress record, not a request to stop or hand off now. Update it after verified milestones and keep implementing the approved plan; do not end work merely because this document has been updated.
+**Stopped at the user's explicit request: "stop and wrap up".** Do not continue implementation until the user resumes it. The earlier clarification still applies when resumed: maintain this file continuously without treating each update as a request to stop.
 
 ## Read this first
 
@@ -91,8 +91,10 @@ Legend: **built** = implemented and tested for the listed scope; **partial** = o
 | `crates/api/src/http.rs` | Authenticated API routes, origin/cookie/body/worker limits, library/server handlers |
 | `crates/api/src/main.rs`, `config.rs` | Local CLI/bootstrap/startup validation; fixed loopback listener behind expected HTTPS origin |
 | `crates/api/migrations/0001_jobs.sql` through `0005_admission.sql` | Current feature-owned schema, including resource reservations, pinned provisioning records and port pool |
-| `crates/protocol/src/lib.rs` | Version 1 request/response, 64 KiB frames, currently Ping only |
-| `crates/agent/src/rpc.rs`, `linux.rs`, `main.rs` | Protocol, 5-second request bound, peer UID, owned non-writable socket parent, mode 0660, bounded listener; Linux agent has no Docker commands |
+| `crates/protocol/src/lib.rs` | Version 1 request/response, 64 KiB frames, Ping and read-only InspectHost |
+| `crates/agent/src/rpc.rs`, `linux.rs`, `main.rs` | Peer UID/socket protection; read-only host inspection dispatch; new configuration/dispatch changes still need fresh Linux socket acceptance |
+| `crates/agent/src/commands.rs`, `docker.rs`, `host.rs` | Bounded host commands, Docker inventory, hardware/private-interface inspection; no mutating game operations |
+| `crates/api/src/agent_client.rs` | Reply validation tested; actual Unix-socket client transport is unfinished |
 | `web/src/App.svelte`, `app.css`, `components/Icon.svelte` | Initial Codex-style responsive UI; no copied OpenAI assets |
 | `web/src/api.ts` | Same-origin fetch, response/error handling and compatibility details |
 | `tests/fixtures/eggs` | MIT-licensed upstream fixtures, source revision/hashes/license |
@@ -113,7 +115,7 @@ All implemented non-trivial slices were developed with failing tests first, then
 - API body limit 16 KiB; egg upload routes allow 1 MiB. Unknown egg fields/semantics fail closed; current supported rule/parser subset is intentionally limited.
 - CLI API binds loopback only; `GM_ORIGIN` must be a bare HTTPS origin. Frontend dev HTTP alone does not establish working secure-cookie browser authentication. Do not weaken cookie/TLS checks to make a preview appear complete.
 
-## Latest verified milestone — active implementation
+## Latest completed milestone
 
 After the user clarified continuous work, implementation continued beyond the first handoff checkpoint:
 
@@ -123,6 +125,28 @@ After the user clarified continuous work, implementation continued beyond the fi
 - Host snapshots must be no older than 30 seconds. Live socket/port and disk enforcement still require agent-side rechecks; database success alone is not a successful game install.
 - **Current Windows Rust suite: 30 tests passed**; formatting and Clippy checks passed. The 2 existing frontend tests/build remain the previous verified UI snapshot, unchanged by this backend milestone. Current Linux integration has not yet been rerun.
 - Next work is trusted agent host-status integration and the Docker game runner. Browser `POST /api/servers` remains gated until that trusted path is connected; no fake successful creation was added.
+
+### Host-side integration — paused WIP
+
+- Added bounded host command execution: stdout/stderr size limits, checked exit status, deadlines, child termination/reaping on failure, and hidden Windows helper processes. Three focused tests passed after failing first.
+- Added Docker inventory parsing: preserves stopped-container allocations, counts uncapped legacy RAM/CPU conservatively, rounds CPU quotas upward, rejects malformed/negative data and invalid IDs, and excludes only explicitly owned container IDs from legacy reservations. Three focused tests passed after failing first.
+- Shared host/admission/port types now live in `crates/core/src/host.rs`; browser creation input still cannot supply host readiness or budget overrides.
+- Hardware parsing and configured-private-interface matching tests passed (2 tests). The read-only native Linux host qualification test was then observed failing on the stub and passing after implementation. It correctly detected hardware, Meshnet IP, legacy limits and stopped-container allocations. This does not establish game-runtime readiness.
+- Implementation choice: use the host's installed Docker CLI as the Docker API client, with argument arrays (no host shell interpolation), fixed local socket and a separate empty CLI config path. This avoids another SDK dependency. The only new commands implemented so far are inspection commands; no game-control operations are enabled.
+- The dedicated Linux source archive was refreshed for that qualification. Build containers had no Docker socket or legacy game-data mounts. The built test binary was then run natively with sudo to read hardware/Docker state. No legacy limits, ports, firewall rules, game files or services were changed.
+
+### Exact stopping point — unfinished work preserved
+
+- Last fully verified whole-workspace checkpoint: **244e969**, atomic admission/allocation milestone, 30 passing Windows Rust tests plus formatting/Clippy.
+- Later focused checks passed: 3 command-bound tests, 3 Docker inventory tests, 2 hardware/interface parser tests, 1 reply-decoder test, existing 3 RPC tests, and 1 native read-only Linux host qualification.
+- The newer complete source tree has **not** had a final full Windows/Linux/Clippy run. Do not combine focused counts into a claimed full-suite pass.
+- **Known stub:** `AgentClient::inspect_host()` in `crates/api/src/agent_client.rs` still contains `todo!()`. It is not connected to HTTP routes. Finish it before enabling host-backed creation or running its new Linux transport tests.
+- New Linux-only tests in `crates/api/tests/agent_transport.rs` are written but **not yet run**. They cover peer UID validation, request/reply transport, oversized responses and stale/future timestamps. First run should expose the missing client implementation.
+- Agent dispatch now supports async InspectHost and the agent CLI has `inspect-host`; configuration uses `GM_DATA_ROOT` and `GM_PRIVATE_IPS`. These latest socket/configuration changes need fresh Linux acceptance beyond the earlier direct probe test.
+- Shared host models moved to `crates/core/src/host.rs`; the API re-exports admission/port types for existing callers.
+- The native qualification used a disposable data root under `/tmp`, which is tmpfs on this Debian host. Its disk figures therefore described that configured temporary filesystem, not the main root disk. Disk quota enforcement and persistent storage remain unqualified.
+- Local Vite preview was stopped and the SSH session logged out during wrap-up. No API/agent service or running test container is intentionally left behind. The dedicated source/log/output directory and downloaded Rust image cache remain for continuation.
+- Current changes are being saved as an explicit WIP checkpoint. Preserve them and consult `git log`; do not assume this WIP is a deployment-ready release.
 
 ## Host facts and blockers
 
@@ -164,7 +188,7 @@ npm --prefix web run check
 npm --prefix web run build
 ```
 
-Fresh handoff verification on 2026-10-27:
+Earlier UI/server-metadata checkpoint verification on 2026-10-27 (`3d0eadd`; historical evidence, not a final test of the paused WIP):
 
 | Check | Result |
 | --- | --- |
@@ -189,7 +213,7 @@ npm --prefix web run dev -- --port 5173 --strictPort
 
 Admin bootstrap uses a hidden password prompt; do not pass passwords in command arguments. `GM_BIND` defaults to loopback `127.0.0.1:19090`.
 
-The Vite preview was started on **http://127.0.0.1:5173**. The sandboxed instance could not be reached from Brave and was stopped. A replacement outside that network sandbox is currently running (Codex exec session 53095 at this handoff). It is only a local frontend dev server, not deployment.
+The Vite preview had been started on **http://127.0.0.1:5173**. Both the original sandboxed instance and its replacement were stopped; the replacement was stopped during the user's requested wrap-up. Restart it explicitly when resuming browser testing. It was only a local frontend dev server, not deployment.
 
 Brave test tab initially displayed a connection timeout before the restart; it has not yet been reloaded and visually verified after the restart. Actual browser QA is **pending**. There is no live signed-in browser session or seeded real server list. A new agent can open a fresh tab at the URL; ephemeral old tab identifiers must not be assumed valid.
 
@@ -197,9 +221,9 @@ The development proxy targets API port 19090. No API process/private HTTPS proxy
 
 ## Next actions for Claude / the next agent
 
-1. Read this file, design.md and implementation-plan.md. Check `git status`, current commits and any newer edits before modifying files. Do not restart completed foundation work or rerun all discovery unnecessarily.
-2. Finish/checkpoint current server metadata/UI work. Run fresh local checks. Reload/open the preview, inspect desktop and narrow layouts, and test real-browser flows when a correctly configured local/private HTTPS path exists. Keep sample visual fixtures explicitly test-only, if used.
-3. Complete real capacity/reservation and allocation handling, then the Docker game runner behind the restricted agent. Do not let browsers send arbitrary host paths, Docker IDs, mounts or commands. No privileged/host-network game or installer containers and no Docker socket in them.
+1. Resume only when the user asks. Read this file, design.md and implementation-plan.md, then check `git status` and commits. Do not redo completed foundation work or host discovery unnecessarily.
+2. Start at the unfinished API agent client. Run its Linux transport tests against the stub, implement bounded authenticated local-socket I/O and timestamp validation, then connect trusted host state to HTTP creation/options/allocation handlers. Run fresh full checks; the last full suite was before this WIP.
+3. Continue the Docker game runner behind the restricted agent and remaining allocation/limit-edit integration. Do not let browsers send arbitrary host paths, Docker IDs, mounts or commands. No privileged/host-network game or installer containers and no Docker socket in them. Restart the local preview for the pending desktop/mobile/browser checks once useful.
 4. Prepare a concrete, reversible storage and capacity rollout. Existing memory limits over-reserve this host; quota enforcement needs a real supported layout. The capacity proposal is arithmetic, not proof that the existing games tolerate lower limits.
 5. Prove one isolated Java installation/start/console/graceful-stop cycle before expanding to the rest. Add durable host-operation checkpoints and lifecycle recovery as actual operations are introduced.
 6. Continue remaining planned tasks, with focused failure-first tests, safe restore checks and real Linux game acceptance. Keep progression.md current at each verified milestone.
@@ -227,6 +251,7 @@ The development proxy targets API port 19090. No API process/private HTTPS proxy
 - `957b89b`: strict shared egg imports, immutable revisions, pinned fixtures.
 - `c25fc91`: Linux peer-authenticated agent health protocol and Linux validation evidence.
 - `3d0eadd`: server metadata/access APIs, initial Codex-style UI, and root-level handoff documents.
+- `244e969`: shared versioned database initialization and atomic resource/allocation/server/install-job creation.
 
 Use `git log` and `git status` for the final current commit; documentation-only follow-ups may be newer than the implementation checkpoints above.
 
