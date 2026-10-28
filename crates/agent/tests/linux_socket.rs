@@ -58,3 +58,27 @@ async fn listener_does_not_replace_existing_paths_or_use_a_writable_parent() {
     assert!(metadata.file_type().is_socket());
     assert_eq!(metadata.permissions().mode() & 0o777, 0o660);
 }
+
+#[test]
+fn the_api_users_group_can_reach_the_socket_and_nobody_else() {
+    use std::os::unix::fs::MetadataExt;
+    if std::fs::metadata("/proc/self").unwrap().uid() != 0 {
+        eprintln!("skipped: changing group ownership needs root");
+        return;
+    }
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let socket_dir = dir.path().join("run");
+    std::fs::create_dir(&socket_dir).unwrap();
+    std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = socket_dir.join("agent.sock");
+    let _listener = manager_agent::linux::bind_private(&path).unwrap();
+    // uid 65534 is "nobody" on Debian and Ubuntu, whose primary group is nogroup (65534).
+    manager_agent::linux::grant_group(&path, 65534).unwrap();
+    let socket = std::fs::metadata(&path).unwrap();
+    let parent = std::fs::metadata(&socket_dir).unwrap();
+    assert_eq!((socket.gid(), socket.mode() & 0o777), (65534, 0o660));
+    assert_eq!((parent.gid(), parent.mode() & 0o777), (65534, 0o750));
+    assert!(manager_agent::linux::grant_group(&path, 4_000_000_000).is_err());
+}

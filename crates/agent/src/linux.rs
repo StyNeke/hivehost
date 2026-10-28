@@ -21,6 +21,39 @@ pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
     Ok(listener)
 }
+// Lets the API service connect: the socket and its directory are given to the API user's
+// primary group (socket 0660, directory 0750). Only the API's UID passes the peer check anyway.
+pub fn grant_group(path: &Path, api_uid: u32) -> io::Result<()> {
+    // SAFETY: getpwuid_r writes into the provided buffers only.
+    let gid = unsafe {
+        let mut entry: libc::passwd = std::mem::zeroed();
+        let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        if libc::getpwuid_r(
+            api_uid,
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut result,
+        ) != 0
+            || result.is_null()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "GM_API_UID does not name an existing user",
+            ));
+        }
+        entry.pw_gid
+    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket parent required"))?;
+    std::os::unix::fs::chown(parent, None, Some(gid))?;
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o750))?;
+    std::os::unix::fs::chown(path, None, Some(gid))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))
+}
+
 pub async fn serve_connection(
     mut stream: UnixStream,
     expected_uid: u32,

@@ -102,6 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = Arc::new(Runtime::new(config));
     runtime.load().await?;
     let listener = bind_private(&path)?;
+    manager_agent::linux::grant_group(&path, api_uid)?;
     let original = std::fs::symlink_metadata(&path)?;
     {
         let runtime = runtime.clone();
