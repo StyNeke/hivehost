@@ -10,7 +10,7 @@ safe budget on the target host, and nothing here lowers them.
 | --- | --- | --- |
 | `manager-agent` | root | Docker, loop-mounted per-server quota volumes under `GM_DATA_ROOT`, per-server UIDs |
 | `manager-api` | `game-manager-api` | SQLite database, the agent socket, outbound HTTPS to Modrinth |
-| nginx (or another proxy) | as packaged | private HTTPS on the private address only |
+| `game-manager-proxy` (its own nginx instance) | root master, `www-data` workers | private HTTPS on the private address only |
 
 The agent only acts on containers, volumes and UIDs recorded in its own registry. The API never
 receives Docker access, host paths or container IDs from browsers.
@@ -40,6 +40,14 @@ sudo mkdir -p /usr/local/share/game-manager && sudo cp -r web/dist /usr/local/sh
 ```bash
 sudo install -m 0644 deploy/systemd/game-manager-*.service /etc/systemd/system/
 ```
+
+The proxy runs nginx with its own configuration, pid file and temp paths
+(`game-manager-proxy.service`), so an existing nginx (for example Pterodactyl's) is never
+reconfigured or reloaded. This matters at boot: on the Debian host nginx starts at ~8 s but
+NordVPN gives `nordlynx` its Meshnet address only at ~19.6 s. A site bound to that address inside a
+shared nginx would make the whole nginx fail to start; the separate unit simply retries every
+5 seconds until the address exists. For the same reason the agent waits (up to 5 minutes) for
+every `GM_PRIVATE_IPS` address before it restarts servers after a boot.
 
 Requirements on the host: Docker, `e2fsprogs` (mkfs.ext4, e2fsck, resize2fs), `util-linux`
 (fallocate, mount), `iproute2`, `iptables` and the time zone database (`tzdata`). Kernel IPv6 must
@@ -76,7 +84,8 @@ GM_PRIVATE_IPS=100.116.183.201
 `/etc/game-manager/api.env` (mode 0600):
 
 ```
-GM_ORIGIN=https://panel.example.internal:8443
+# The exact URL people type: an IP origin keeps working when Meshnet names do not resolve.
+GM_ORIGIN=https://100.116.183.201:8443
 # Optional:
 # GM_BACKUP_ROOT=/var/lib/game-manager-backups   must match the agent's
 # GM_MODRINTH_API / GM_GITHUB_API                  only for testing against stand-ins
@@ -97,12 +106,40 @@ is read from a hidden prompt.
 
 ## 5. Private HTTPS
 
-Adapt `deploy/nginx/game-manager.conf`: listen only on the private address, use a certificate
-your devices trust, and keep it out of any public tunnel. Then:
+Install `deploy/nginx/game-manager.conf` as `/etc/game-manager/nginx.conf` (0644) with your
+private address and name. Keep it out of any public tunnel.
+
+A private CA whose certificate devices install once. Its `nameConstraints` limit it to the
+panel's address and Meshnet name, so a device that trusts it cannot be fooled for any other site:
 
 ```bash
-sudo systemctl enable --now game-manager-agent game-manager-api
+sudo install -d -m 0700 /etc/game-manager/tls && cd /etc/game-manager/tls && sudo sh -c 'umask 077
+openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ca.key -out ca.crt -days 3650 -subj "/CN=Game manager private CA" -addext "basicConstraints=critical,CA:TRUE,pathlen:0" -addext "keyUsage=critical,keyCertSign,cRLSign" -addext "nameConstraints=critical,permitted;IP:100.116.183.201/255.255.255.255,permitted;DNS:stijnpikkert-altai.nord"
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout panel.key -out panel.csr -subj "/CN=stijnpikkert-altai.nord"
+printf "basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
+extendedKeyUsage=serverAuth
+subjectAltName=IP:100.116.183.201,DNS:stijnpikkert-altai.nord
+" > panel.ext
+openssl x509 -req -in panel.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out panel.crt -days 397 -sha256 -extfile panel.ext
+rm panel.csr panel.ext; chmod 0644 ca.crt panel.crt'
 ```
+
+Renew `panel.crt` before it expires (397 days, the browser maximum) with the same `x509 -req`
+step, then `systemctl reload game-manager-proxy`. Trust `ca.crt` on each device: Windows
+`certutil -user -addstore Root ca.crt`; Android Settings → Security → Install a certificate → CA
+certificate; iOS/iPadOS install the profile, then Settings → General → About → Certificate Trust
+Settings. Then:
+
+```bash
+sudo systemctl enable --now game-manager-agent game-manager-api game-manager-proxy
+```
+
+**NordVPN Meshnet and game ports.** Game ports are published on the Meshnet address through
+Docker's DNAT, so player traffic is *forwarded*, not delivered to the host. NordVPN's forward
+chain drops forwarded Meshnet traffic unless the player's device has **Allow Routing** and **Allow
+Local Network Access** enabled for this server (in that peer's Meshnet permissions on this
+host). Without them the panel works (it is local) but game joins time out.
 
 ## 6. Qualify and accept
 
@@ -148,7 +185,8 @@ owns. They apply only to traffic from `GM_NETWORK_SUBNET`:
   (100.64.0.0/10), link-local or other Docker ranges. Replies to connections players opened are
   allowed, and so is the internet.
 
-Nothing else in the host firewall is touched, so existing rules (for example TCPShield or the
+Docker adds its own standard rules for the `gm-games` bridge (`br-…`) and a MASQUERADE rule for the
+subnet. Nothing else in the host firewall is touched, so existing rules (for example TCPShield or the
 legacy game ports) stay as they are. Check after the first start:
 
 ```bash
