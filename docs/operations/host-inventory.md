@@ -61,7 +61,7 @@ Same host, nothing installed or changed. Differences from the 2026-10-27 snapsho
   192.168.178.0/24). `ip raw` drops traffic to 172.18.0.2 not from pterodactyl0. NordVPN's
   `inet nordvpn` table accepts Meshnet input only from its allow-list of peers.
 - Meshnet name of this host: `stijnpikkert-altai.nord` (not usable for a public certificate).
-- No `/var/lib/game-manager`, `/etc/game-manager`, `game-manager-api` user or UIDs 200000–299999.
+- No `/var/lib/hivehost`, `/etc/hivehost`, `hivehost-api` user or UIDs 200000–299999 (the product was still called "game manager" at this inventory).
 
 ## Not established
 

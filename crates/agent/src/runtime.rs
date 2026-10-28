@@ -58,8 +58,8 @@ fn game_summary(verb: &str, game: Option<&DetectedGame>) -> String {
     }
 }
 
-pub const SERVER_LABEL: &str = "dev.game-manager.server";
-pub const INSTALL_LABEL: &str = "dev.game-manager.install";
+pub const SERVER_LABEL: &str = "dev.hivehost.server";
+pub const INSTALL_LABEL: &str = "dev.hivehost.install";
 const INSTALL_TIMEOUT_SECS: u64 = 30 * 60;
 const PULL_TIMEOUT_SECS: u64 = 20 * 60;
 const MAX_EXTENSION_BYTES: u64 = 128 * 1024 * 1024;
@@ -194,8 +194,8 @@ pub struct Egress<'a> {
     pub java_truststore: Option<&'a Path>,
 }
 
-const CA_TARGET: &str = "/etc/game-manager/ca.pem";
-const TRUSTSTORE_TARGET: &str = "/etc/game-manager/cacerts";
+const CA_TARGET: &str = "/etc/hivehost/ca.pem";
+const TRUSTSTORE_TARGET: &str = "/etc/hivehost/cacerts";
 
 pub fn environment(spec: &ServerSpec, egress: &Egress) -> Vec<(String, String)> {
     let mut environment: Vec<(String, String)> = spec
@@ -713,7 +713,7 @@ impl Runtime {
                 "--opt".into(),
                 "com.docker.network.bridge.enable_icc=false".into(),
                 "--label".into(),
-                "dev.game-manager=network".into(),
+                "dev.hivehost=network".into(),
                 name.into(),
             ],
             30,

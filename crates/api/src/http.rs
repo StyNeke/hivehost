@@ -250,7 +250,7 @@ impl AppState {
 // Without an agent, host-dependent routes fail closed with host_unavailable/host_not_ready.
 pub const MODRINTH_API: &str = "https://api.modrinth.com/v2";
 
-pub const BACKUP_ROOT: &str = "/var/lib/game-manager-backups";
+pub const BACKUP_ROOT: &str = "/var/lib/hivehost-backups";
 
 pub fn router(database: PathBuf, origin: String) -> Router {
     router_with_services(

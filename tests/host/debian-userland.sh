@@ -26,6 +26,6 @@ for test in "$@"; do
     fi
 done
 echo "== manager-agent inspect-host"
-GM_PRIVATE_IPS=127.0.0.1 GM_DATA_ROOT=/var/lib/game-manager /manager-agent inspect-host | head -c 1500
+GM_PRIVATE_IPS=127.0.0.1 GM_DATA_ROOT=/var/lib/hivehost /manager-agent inspect-host | head -c 1500
 echo
 exit $status

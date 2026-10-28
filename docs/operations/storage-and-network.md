@@ -13,7 +13,7 @@ Filtered firewall inspection found INPUT policy ACCEPT, FORWARD DROP with Docker
 - Web API loopback `127.0.0.1:19090`, private HTTPS proxy `100.116.183.201:8443`; verify availability again at deployment time.
 - TLS must validate the hostname or IP used by friends. Proposed initial approach: a private CA and explicit client trust setup, with a certificate SAN for the chosen private address/name. Do not ship browser instructions to ignore TLS warnings. CA trust setup is a deployment prerequisite.
 - Game allocation pool bound to the verified Meshnet IP, initially a separately validated range above 25600. Check TCP and UDP, host sockets and legacy reservations before every assignment. Do not publish games on wildcard IPv4/IPv6 or reuse 25565/25567.
-- Application data root `/var/lib/game-manager`, agent socket `/run/game-manager/agent.sock`; distinct from all observed legacy directories. These are proposals pending deployment checks, not existing paths.
+- Application data root `/var/lib/hivehost`, agent socket `/run/hivehost/agent.sock`; distinct from all observed legacy directories. These are proposals pending deployment checks, not existing paths.
 - Create a dedicated bridge and qualify ingress/egress isolation. Block access to host control services, LAN services, legacy bridges, metadata addresses and agent/Docker sockets while permitting necessary public artifact downloads. Prove Docker forwarding does not bypass the intended rules.
 - No public Cloudflare route for the panel. No changes to existing routes are necessary to build locally.
 

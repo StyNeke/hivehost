@@ -2,7 +2,7 @@
 """Send one request to the host agent and print the JSON reply.
 
 usage: agent-call.py SOCKET OPERATION_JSON
-example: agent-call.py /run/game-manager/agent.sock '{"type":"inspect_host"}'
+example: agent-call.py /run/hivehost/agent.sock '{"type":"inspect_host"}'
 Must run as the user named by GM_API_UID; the agent rejects other peers.
 """
 import json

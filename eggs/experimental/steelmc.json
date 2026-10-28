@@ -6,7 +6,7 @@
     },
     "exported_at": "2026-10-28T00:00:00+00:00",
     "name": "SteelMC (experimental)",
-    "author": "game-manager@localhost",
+    "author": "hivehost@localhost",
     "description": "SteelMC, an independent Rust implementation of the Minecraft Java Edition server. Experimental: survival gameplay is incomplete and no plugins or mod loaders are supported (upstream README). Console commands are not available because SteelMC needs a terminal for input.",
     "features": null,
     "docker_images": {

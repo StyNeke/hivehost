@@ -267,7 +267,7 @@ fn clip(text: &str, limit: usize) -> String {
 impl GitHub {
     pub fn new(base: &str) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent("game-manager (experimental status)")
+            .user_agent("hivehost (experimental status)")
             .timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::none())
             .build()

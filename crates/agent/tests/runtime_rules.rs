@@ -62,7 +62,7 @@ fn strings(args: Vec<std::ffi::OsString>) -> Vec<String> {
 #[test]
 fn game_containers_are_unprivileged_bounded_and_mount_only_their_volume() {
     let spec = spec();
-    let volume = Path::new("/var/lib/game-manager/volumes/x");
+    let volume = Path::new("/var/lib/hivehost/volumes/x");
     let plan = ContainerPlan {
         spec: &spec,
         uid: 200001,
@@ -88,7 +88,7 @@ fn game_containers_are_unprivileged_bounded_and_mount_only_their_volume() {
         "--memory-swap 4294967296",
         "--cpus 1.500",
         "--pids-limit 512",
-        "type=bind,source=/var/lib/game-manager/volumes/x,target=/home/container",
+        "type=bind,source=/var/lib/hivehost/volumes/x,target=/home/container",
     ] {
         assert!(joined.contains(required), "missing {required}");
     }
@@ -161,18 +161,15 @@ fn installers_get_only_package_manager_capabilities_and_a_read_only_script() {
     );
     assert!(!joined.contains("--privileged") && !joined.contains("docker.sock"));
     assert!(args.contains(&"HTTPS_PROXY=http://172.30.250.1:3128".to_string()));
-    assert!(joined.contains("-Dhttps.proxyHost=172.30.250.1 -Dhttps.proxyPort=3128 -Djavax.net.ssl.trustStore=/etc/game-manager/cacerts"));
+    assert!(joined.contains("-Dhttps.proxyHost=172.30.250.1 -Dhttps.proxyPort=3128 -Djavax.net.ssl.trustStore=/etc/hivehost/cacerts"));
     assert!(
-        joined.contains(
-            "type=bind,source=/etc/proxy-ca.pem,target=/etc/game-manager/ca.pem,readonly"
-        )
+        joined.contains("type=bind,source=/etc/proxy-ca.pem,target=/etc/hivehost/ca.pem,readonly")
     );
     assert!(
-        joined.contains(
-            "type=bind,source=/etc/proxy-cacerts,target=/etc/game-manager/cacerts,readonly"
-        )
+        joined
+            .contains("type=bind,source=/etc/proxy-cacerts,target=/etc/hivehost/cacerts,readonly")
     );
-    assert!(args.contains(&"SSL_CERT_FILE=/etc/game-manager/ca.pem".to_string()));
+    assert!(args.contains(&"SSL_CERT_FILE=/etc/hivehost/ca.pem".to_string()));
     assert_eq!(
         &args[args.len() - 3..],
         [

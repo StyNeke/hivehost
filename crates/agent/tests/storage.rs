@@ -12,18 +12,18 @@ use uuid::Uuid;
 
 #[test]
 fn mount_points_are_matched_exactly_including_escaped_spaces() {
-    let info = "36 35 98:0 / /var/lib/game\\040manager/volumes/a rw,nodev - ext4 /dev/loop0 rw\n";
+    let info = "36 35 98:0 / /var/lib/hive\\040host/volumes/a rw,nodev - ext4 /dev/loop0 rw\n";
     assert!(is_mount_point(
         info,
-        Path::new("/var/lib/game manager/volumes/a")
+        Path::new("/var/lib/hive host/volumes/a")
     ));
     assert!(!is_mount_point(
         info,
-        Path::new("/var/lib/game manager/volumes")
+        Path::new("/var/lib/hive host/volumes")
     ));
     assert!(!is_mount_point(
         info,
-        Path::new("/var/lib/game manager/volumes/ab")
+        Path::new("/var/lib/hive host/volumes/ab")
     ));
 }
 

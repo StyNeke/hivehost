@@ -1,0 +1,22 @@
+# Private HTTPS proxy for the web API: a separate nginx instance (no change to any existing
+# nginx). It binds to the private VPN address, which may only appear some seconds after boot,
+# so it keeps retrying instead of failing once.
+[Unit]
+Description=HiveHost private HTTPS proxy
+Documentation=file:///usr/local/share/hivehost/docs/deployment.md
+Wants=network-online.target hivehost-api.service
+After=network-online.target hivehost-api.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=/usr/sbin/nginx -t -q -c /etc/hivehost/nginx.conf
+ExecStart=/usr/sbin/nginx -c /etc/hivehost/nginx.conf -g "daemon off;"
+ExecReload=/bin/kill -HUP $MAINPID
+RuntimeDirectory=hivehost-proxy
+CacheDirectory=hivehost-proxy
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

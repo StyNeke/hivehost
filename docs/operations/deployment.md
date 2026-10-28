@@ -9,8 +9,8 @@ safe budget on the target host, and nothing here lowers them.
 | Component | User | Authority |
 | --- | --- | --- |
 | `manager-agent` | root | Docker, loop-mounted per-server quota volumes under `GM_DATA_ROOT`, per-server UIDs |
-| `manager-api` | `game-manager-api` | SQLite database, the agent socket, outbound HTTPS to Modrinth |
-| `game-manager-proxy` (its own nginx instance) | root master, `www-data` workers | private HTTPS on the private address only |
+| `manager-api` | `hivehost-api` | SQLite database, the agent socket, outbound HTTPS to Modrinth |
+| `hivehost-proxy` (its own nginx instance) | root master, `www-data` workers | private HTTPS on the private address only |
 
 The agent only acts on containers, volumes and UIDs recorded in its own registry. The API never
 receives Docker access, host paths or container IDs from browsers.
@@ -34,15 +34,15 @@ sudo install -m 0755 target/release/manager-agent target/release/manager-api /us
 ```
 
 ```bash
-sudo mkdir -p /usr/local/share/game-manager && sudo cp -r web/dist /usr/local/share/game-manager/web
+sudo mkdir -p /usr/local/share/hivehost && sudo cp -r web/dist /usr/local/share/hivehost/web
 ```
 
 ```bash
-sudo install -m 0644 deploy/systemd/game-manager-*.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/hivehost-*.service /etc/systemd/system/
 ```
 
 The proxy runs nginx with its own configuration, pid file and temp paths
-(`game-manager-proxy.service`), so an existing nginx (for example Pterodactyl's) is never
+(`hivehost-proxy.service`), so an existing nginx (for example Pterodactyl's) is never
 reconfigured or reloaded. This matters at boot: on the Debian host nginx starts at ~8 s but
 NordVPN gives `nordlynx` its Meshnet address only at ~19.6 s. A site bound to that address inside a
 shared nginx would make the whole nginx fail to start; the separate unit simply retries every
@@ -58,20 +58,20 @@ filesystem with room for every server's disk limit plus `GM_DISK_RESERVE_BYTES`.
 ## 3. Users and configuration
 
 ```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin game-manager-api
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin hivehost-api
 ```
 
 ```bash
-sudo install -d -m 0700 /var/lib/game-manager /etc/game-manager
+sudo install -d -m 0700 /var/lib/hivehost /etc/hivehost
 ```
 
-`/etc/game-manager/agent.env` (mode 0600):
+`/etc/hivehost/agent.env` (mode 0600):
 
 ```
-GM_API_UID=<uid of game-manager-api, from `id -u game-manager-api`>
+GM_API_UID=<uid of hivehost-api, from `id -u hivehost-api`>
 GM_PRIVATE_IPS=100.116.183.201
 # Optional:
-# GM_BACKUP_ROOT=/var/lib/game-manager-backups  backups (root:API group 0750; may be another disk)
+# GM_BACKUP_ROOT=/var/lib/hivehost-backups  backups (root:API group 0750; may be another disk)
 # GM_DISK_RESERVE_BYTES=21474836480   space kept free for the OS (default 10 GiB); backups never use it
 # GM_STOP_GRACE_SECS=120              per-server graceful stop time before a forced stop
 # GM_GAME_UID_BASE=200000             first per-server UID; keep the range unused
@@ -81,40 +81,40 @@ GM_PRIVATE_IPS=100.116.183.201
 # GM_NETWORK_ISOLATION=on             firewall rules for the game subnet (see below); off disables
 ```
 
-`/etc/game-manager/api.env` (mode 0600):
+`/etc/hivehost/api.env` (mode 0600):
 
 ```
 # The exact URL people type: an IP origin keeps working when Meshnet names do not resolve.
 GM_ORIGIN=https://100.116.183.201:8443
 # Optional:
-# GM_BACKUP_ROOT=/var/lib/game-manager-backups   must match the agent's
+# GM_BACKUP_ROOT=/var/lib/hivehost-backups   must match the agent's
 # GM_MODRINTH_API / GM_GITHUB_API                  only for testing against stand-ins
 ```
 
-The agent gives the socket (0660) and `/run/game-manager` (0750) to the API user's primary
+The agent gives the socket (0660) and `/run/hivehost` (0750) to the API user's primary
 group at start-up and only answers that UID.
 
 ## 4. First administrator
 
 ```bash
-sudo -u game-manager-api GM_DATABASE=/var/lib/game-manager-api/app.sqlite /usr/local/bin/manager-api init-admin YOUR_NAME
+sudo -u hivehost-api GM_DATABASE=/var/lib/hivehost-api/app.sqlite /usr/local/bin/manager-api init-admin YOUR_NAME
 ```
 
-Run `systemctl start game-manager-api` once first if `/var/lib/game-manager-api` does not exist
+Run `systemctl start hivehost-api` once first if `/var/lib/hivehost-api` does not exist
 yet (systemd creates it), then stop it, create the administrator and start it again. The password
 is read from a hidden prompt.
 
 ## 5. Private HTTPS
 
-Install `deploy/nginx/game-manager.conf` as `/etc/game-manager/nginx.conf` (0644) with your
+Install `deploy/nginx/hivehost.conf` as `/etc/hivehost/nginx.conf` (0644) with your
 private address and name. Keep it out of any public tunnel.
 
 A private CA whose certificate devices install once. Its `nameConstraints` limit it to the
 panel's address and Meshnet name, so a device that trusts it cannot be fooled for any other site:
 
 ```bash
-sudo install -d -m 0700 /etc/game-manager/tls && cd /etc/game-manager/tls && sudo sh -c 'umask 077
-openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ca.key -out ca.crt -days 3650 -subj "/CN=Game manager private CA" -addext "basicConstraints=critical,CA:TRUE,pathlen:0" -addext "keyUsage=critical,keyCertSign,cRLSign" -addext "nameConstraints=critical,permitted;IP:100.116.183.201/255.255.255.255,permitted;DNS:stijnpikkert-altai.nord"
+sudo install -d -m 0700 /etc/hivehost/tls && cd /etc/hivehost/tls && sudo sh -c 'umask 077
+openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ca.key -out ca.crt -days 3650 -subj "/CN=HiveHost private CA" -addext "basicConstraints=critical,CA:TRUE,pathlen:0" -addext "keyUsage=critical,keyCertSign,cRLSign" -addext "nameConstraints=critical,permitted;IP:100.116.183.201/255.255.255.255,permitted;DNS:stijnpikkert-altai.nord"
 openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout panel.key -out panel.csr -subj "/CN=stijnpikkert-altai.nord"
 printf "basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature
@@ -126,13 +126,13 @@ rm panel.csr panel.ext; chmod 0644 ca.crt panel.crt'
 ```
 
 Renew `panel.crt` before it expires (397 days, the browser maximum) with the same `x509 -req`
-step, then `systemctl reload game-manager-proxy`. Trust `ca.crt` on each device: Windows
+step, then `systemctl reload hivehost-proxy`. Trust `ca.crt` on each device: Windows
 `certutil -user -addstore Root ca.crt`; Android Settings → Security → Install a certificate → CA
 certificate; iOS/iPadOS install the profile, then Settings → General → About → Certificate Trust
 Settings. Then:
 
 ```bash
-sudo systemctl enable --now game-manager-agent game-manager-api game-manager-proxy
+sudo systemctl enable --now hivehost-agent hivehost-api hivehost-proxy
 ```
 
 **NordVPN Meshnet and game ports.** Game ports are published on the Meshnet address through
@@ -157,7 +157,7 @@ server. Delete the server afterwards from its Delete tab.
 
 ## Stopping and rebooting
 
-`systemctl stop game-manager-agent` asks every running server to stop (its egg stop command),
+`systemctl stop hivehost-agent` asks every running server to stop (its egg stop command),
 waits up to the grace period concurrently, force-stops the rest and records that. Servers that
 were running start again, one at a time, when the agent starts. Docker restart policies are not
 used for managed containers; the agent's crash policy (3 restarts per 10 minutes) applies.

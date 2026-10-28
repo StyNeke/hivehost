@@ -33,8 +33,40 @@ NOPASSWD sudo drop-in the user created (`/etc/sudoers.d/90-claude-temp`; remove 
    Local Network Access*. Game ports published on `100.116.183.201` are Docker DNAT, i.e.
    forwarded, so peer `100.112.56.3` (both disabled) can reach the panel but not game servers.
 
-Waiting for the user's decisions on the legacy limits, the isolation chains and the panel
-port/data locations/certificate before installing anything.
+5. **User decisions (2026-10-28):** (a) lower legacy RAM in the Pterodactyl panel to 5800 / 3800
+   / 2800 / 1800 MiB (`94125d3b`, `57d8f102`, `2e83460d`, `b556a801`; rollback 20000 / 4000 /
+   15000 / 8000) — the user makes that change; remove the orphan installer (done:
+   `docker rm 745af164…_installer`); treat uncapped legacy CPU as shared (agent change, commit
+   `41d96cd`). (b) Network isolation on. (c) Panel on `100.116.183.201:8443`, private CA.
+6. **Problems found on the real host and fixed in code/runbook:** uncapped legacy CPU blocked
+   creation; nginx starts ~11 s before `nordlynx` has its address, so the panel now runs as a
+   separate nginx unit that retries (Pterodactyl's nginx is never touched) and the agent waits up
+   to 5 minutes for `GM_PRIVATE_IPS` before restoring servers at boot; Meshnet peers need *Allow
+   Routing* + *Allow Local Network Access* to join games (documented).
+7. **Renamed to HiveHost** at the user's request: UI title/brand, systemd units
+   (`hivehost-agent`, `hivehost-api`, `hivehost-proxy`), paths (`/etc/hivehost`,
+   `/var/lib/hivehost`, `/var/lib/hivehost-api`, `/var/lib/hivehost-backups`, `/run/hivehost`,
+   `/usr/local/share/hivehost`), service user `hivehost-api`, Docker labels `dev.hivehost.*`.
+   Kept on purpose: the `GM_*` environment variables, the `GM-ISOLATE-*` chains, the `gm-games`
+   network name and the `manager-agent`/`manager-api` binary and crate names.
+8. **Deployed** (as in the runbook): binaries (SHA-256 agent `276be12a…34a4`, API
+   `2c3961d5…5b2a`), web UI, three units enabled, `/etc/hivehost/{agent,api}.env` (0600,
+   `GM_API_UID=997`, `GM_PRIVATE_IPS=100.116.183.201`, `GM_ORIGIN=https://100.116.183.201:8443`),
+   name-constrained private CA and a 397-day panel certificate under `/etc/hivehost/tls` (CA
+   SHA-256 `84:CA:81:EC:…:5E:9C`). The deployed services were renamed in place (data moved, user
+   renamed with `usermod`/`groupmod`, same UID; network recreated with the new label).
+   Verified: all three units active; `curl --cacert ca.crt https://100.116.183.201:8443/` serves
+   the HiveHost UI and `/api/session` answers 401; port 8443 on the LAN address refuses; the
+   firewall diff against a snapshot taken before the first start removes nothing and adds only
+   the two `GM-ISOLATE-*` chains with their two jumps plus Docker's own rules for the new bridge;
+   ip6tables unchanged; legacy containers untouched.
+9. **Checks on the final tree:** Linux (Rust 1.99.0 as pinned) `cargo test --workspace` 98 passed,
+   0 failed, 3 ignored; fmt and clippy clean; web 15 tests, svelte-check 0/0, build OK.
+
+**Next (waiting on the user):** create the administrator with `init-admin` (hidden prompt), trust
+the CA on their devices, lower the Pterodactyl memory, then the acceptance runs. The Bedrock
+client test needs `bedrock-protocol`, whose install (it pulls a pinned git dependency) was refused
+by the session's permission check; the user has to allow it.
 
 ## Read this first
 

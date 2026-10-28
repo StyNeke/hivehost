@@ -12,7 +12,7 @@ async fn interface_is_served_with_strict_headers_and_api_paths_never_fall_back()
     std::fs::create_dir_all(site.join("assets")).unwrap();
     std::fs::write(
         site.join("index.html"),
-        "<!doctype html><title>Game Manager</title>",
+        "<!doctype html><title>HiveHost</title>",
     )
     .unwrap();
     std::fs::write(site.join("assets/app.js"), "console.log(1)").unwrap();
@@ -37,7 +37,7 @@ async fn interface_is_served_with_strict_headers_and_api_paths_never_fall_back()
     assert!(
         String::from_utf8(to_bytes(page.into_body(), 1024).await.unwrap().to_vec())
             .unwrap()
-            .contains("Game Manager")
+            .contains("HiveHost")
     );
 
     let script = app.clone().oneshot(get("/assets/app.js")).await.unwrap();

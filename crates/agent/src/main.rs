@@ -4,7 +4,7 @@ fn config_from_env() -> Result<manager_agent::host::AgentConfig, Box<dyn std::er
     let mut config = manager_agent::host::AgentConfig {
         data_root: env::var("GM_DATA_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/var/lib/game-manager")),
+            .unwrap_or_else(|_| PathBuf::from("/var/lib/hivehost")),
         private_ips: env::var("GM_PRIVATE_IPS")
             .unwrap_or_default()
             .split(',')
@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let path = PathBuf::from(
-        env::var("GM_AGENT_SOCKET").unwrap_or_else(|_| "/run/game-manager/agent.sock".into()),
+        env::var("GM_AGENT_SOCKET").unwrap_or_else(|_| "/run/hivehost/agent.sock".into()),
     );
     let api_uid: u32 = env::var("GM_API_UID")
         .map_err(|_| "GM_API_UID must identify the authorized API service user")?

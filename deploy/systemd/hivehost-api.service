@@ -1,22 +1,22 @@
 # Web API and interface. Unprivileged; reaches the host only through the agent socket.
 [Unit]
-Description=Game manager web API
-Documentation=file:///usr/local/share/game-manager/docs/deployment.md
-Wants=game-manager-agent.service
-After=game-manager-agent.service network-online.target
+Description=HiveHost web API
+Documentation=file:///usr/local/share/hivehost/docs/deployment.md
+Wants=hivehost-agent.service
+After=hivehost-agent.service network-online.target
 
 [Service]
 Type=simple
-User=game-manager-api
-Group=game-manager-api
+User=hivehost-api
+Group=hivehost-api
 ExecStart=/usr/local/bin/manager-api
-Environment=GM_DATABASE=/var/lib/game-manager-api/app.sqlite
-Environment=GM_STATIC_DIR=/usr/local/share/game-manager/web
-Environment=GM_AGENT_SOCKET=/run/game-manager/agent.sock
+Environment=GM_DATABASE=/var/lib/hivehost-api/app.sqlite
+Environment=GM_STATIC_DIR=/usr/local/share/hivehost/web
+Environment=GM_AGENT_SOCKET=/run/hivehost/agent.sock
 Environment=GM_AGENT_UID=0
 # GM_ORIGIN (required): the exact private HTTPS origin users open.
-EnvironmentFile=/etc/game-manager/api.env
-StateDirectory=game-manager-api
+EnvironmentFile=/etc/hivehost/api.env
+StateDirectory=hivehost-api
 StateDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=yes

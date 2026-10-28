@@ -27,7 +27,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            data_root: "/var/lib/game-manager".into(),
+            data_root: "/var/lib/hivehost".into(),
             private_ips: vec![],
             uid_base: 200_000,
             container_proxy: None,
@@ -38,7 +38,7 @@ impl Default for AgentConfig {
             network_subnet: "172.30.250.0/24".into(),
             stop_grace_secs: 120,
             docker_socket: "/var/run/docker.sock".into(),
-            backup_root: "/var/lib/game-manager-backups".into(),
+            backup_root: "/var/lib/hivehost-backups".into(),
             api_gid: None,
             network_isolation: true,
         }

@@ -10,7 +10,7 @@ use std::{env, path::PathBuf};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database =
-        PathBuf::from(env::var("GM_DATABASE").unwrap_or_else(|_| "game-manager.sqlite".into()));
+        PathBuf::from(env::var("GM_DATABASE").unwrap_or_else(|_| "hivehost.sqlite".into()));
     let arguments: Vec<_> = env::args().skip(1).collect();
     if arguments.first().map(String::as_str) == Some("init-admin") && arguments.len() == 2 {
         let password = rpassword::prompt_password("New panel password (at least 12 bytes): ")?;

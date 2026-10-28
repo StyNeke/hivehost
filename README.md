@@ -1,4 +1,4 @@
-# Linux game server manager
+# HiveHost
 
 Work in progress: a new Rust-based manager for one private Linux host. Start with [progression.md](progression.md), then the [approved design](design.md) and [implementation plan](implementation-plan.md). All three handoff documents live together in this root folder.
 
@@ -35,7 +35,7 @@ cargo fmt --all -- --check
 Create a new administrator using a hidden interactive password prompt:
 
 ```powershell
-$env:GM_DATABASE = 'game-manager.sqlite'
+$env:GM_DATABASE = 'hivehost.sqlite'
 cargo run -p manager-api -- init-admin stijn
 ```
 

@@ -117,7 +117,7 @@
 
 <div class="app-shell">
   <aside class="sidebar" aria-label="Workspace navigation">
-    <a class="brand" href="/" aria-label="Game Manager home"><span class="brand-symbol"><Icon name="servers" size={20} /></span><span>Game Manager</span></a>
+    <a class="brand" href="/" aria-label="HiveHost home"><span class="brand-symbol"><Icon name="servers" size={20} /></span><span>HiveHost</span></a>
     <button class="new-server" disabled={!session} onclick={() => { navigate('servers'); createOpen = true; }}><Icon name="plus" /> Add server</button>
     <div class="nav-label">Workspace</div>
     <nav>
@@ -185,6 +185,6 @@
         {/key}
       {/if}
     </main>
-    <footer class="workspace-footer">Game Manager <span>Built for your team. Hosted by you.</span></footer>
+    <footer class="workspace-footer">HiveHost <span>Built for your team. Hosted by you.</span></footer>
   </div>
 </div>
