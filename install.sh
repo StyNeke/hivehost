@@ -1,6 +1,7 @@
 #!/bin/bash
 # HiveHost installer for Debian (and similar systemd hosts with Docker). Run as root:
 #   curl -fsSL https://raw.githubusercontent.com/StyNeke/hivehost/main/install.sh | sudo bash
+# or, from a checkout (needed while the repository is private): sudo ./install.sh
 # First run asks for the private address, port, certificate name and the administrator; later
 # runs keep that configuration and only rebuild, reinstall and restart. Never touches an existing
 # nginx, Docker containers or firewall rules (the agent adds only its own GM-ISOLATE chains).
@@ -59,7 +60,13 @@ fi
 
 say "Building HiveHost ($REF) in disposable containers"
 rm -rf "$BUILD/src" && mkdir -p "$BUILD/src" "$BUILD/cargo" "$BUILD/target" "$BUILD/rustup"
-curl -fsSL "$SOURCE" | tar -xz -C "$BUILD/src" --strip-components=1
+# Run from a checkout (private repository: `sudo ./install.sh`), else download the source.
+here=$(dirname "${BASH_SOURCE[0]:-/nonexistent}")
+if [ -f "$here/Cargo.toml" ] && [ -f "$here/deploy/nginx/hivehost.conf" ]; then
+    tar -C "$here" --exclude=./target --exclude=./web/node_modules --exclude=./web/dist --exclude=./.git -cf - . | tar -x -C "$BUILD/src"
+else
+    curl -fsSL "$SOURCE" | tar -xz -C "$BUILD/src" --strip-components=1
+fi
 docker run --rm -v "$BUILD/src:/src" -v "$BUILD/cargo:/cargo" -v "$BUILD/target:/target" -v "$BUILD/rustup:/rustup" \
     -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e RUSTUP_HOME=/rustup -w /src rust:1.99-slim \
     sh -c 'cargo build --locked --release -p manager-agent -p manager-api'
