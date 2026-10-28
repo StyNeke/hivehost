@@ -4,6 +4,38 @@ Last updated: 2026-10-28 (Europe/Amsterdam).
 
 **Resumed 2026-10-27** in a Claude Code cloud session on branch `claude/ecstatic-allen-u2m477`, which carries all earlier `codex/game-server-manager` commits. The user then set the goal "finish it, fix all edge cases, test it, and when done test a Fabric server with Carpet spawning bots". That cloud session built the game runner, server workspace and Modrinth installs and passed that acceptance through the real interface; see "Latest completed milestone". Keep maintaining this file continuously without treating each update as a request to stop.
 
+## Debian host qualification — 2026-10-28 (branch `claude/debian-host-qualification`)
+
+Claude Code on the user's Windows PC, SSH to `stijn@server` with a dedicated key and a temporary
+NOPASSWD sudo drop-in the user created (`/etc/sudoers.d/90-claude-temp`; remove it and the
+`claude-hivehost@StijnPCP` key line when done). No credentials are stored anywhere in the repo.
+
+1. **Inventory (read-only):** recorded in [host-inventory.md](docs/operations/host-inventory.md)
+   ("Re-inventory — 2026-10-28"). Main changes: kernel IPv6 is on; the agent's CPU budget is a
+   second blocker (uncapped legacy containers count 6,000 m each); an orphan Pterodactyl installer
+   container still counts as a reservation; the running NeoForge game peaked at 2.64 GiB.
+2. **Build (on the server, disposable capped container):** `rust:1.99-slim` (Rust 1.99.1, Debian
+   13.7, glibc 2.41), `--cpus 4 --memory 6g`, UID 1000, no capabilities. `cargo build --locked
+   --release -p manager-agent -p manager-api` finished in 1m27s. SHA-256: agent
+   `469e139b…3676`, API `e386face…33a3`. Web: `npm ci`, 15 tests, svelte-check 0/0 and the build
+   passed on the Windows PC (Node 26.1). The Windows `cargo test` stops at `link.exe` (local
+   toolchain problem, not the code); Rust checks run on Linux instead.
+3. **Agent host tests natively on the Debian host, as root (`--test-threads=1`):** backups 6,
+   file_manager 5, files 9, firewall 2, linux_socket 3, storage 4 — **29 passed, 0 failed**; no
+   loop devices or mounts left behind. Host tools: e2fsprogs, util-linux, iproute2, iptables 1.8.11
+   (nf_tables), tzdata all present. `sudo manager-agent inspect-host` with
+   `GM_PRIVATE_IPS=100.116.183.201` and a temporary data root: `disk_quotas_ready: true`, budget
+   20,780,363,776 B RAM / 5,000 m CPU / 61.45 GB disk, legacy reserved 53,191,743,898 B RAM and
+   30,000 m CPU, blockers "Existing container RAM limits exceed the safe game budget" and
+   "Existing container CPU limits exceed the safe game budget".
+4. **Found while checking the network:** NordVPN's `inet nordvpn` forward chain drops Meshnet
+   traffic that is forwarded to `172.16.0.0/12` unless the peer has *Allow Routing* and *Allow
+   Local Network Access*. Game ports published on `100.116.183.201` are Docker DNAT, i.e.
+   forwarded, so peer `100.112.56.3` (both disabled) can reach the panel but not game servers.
+
+Waiting for the user's decisions on the legacy limits, the isolation chains and the panel
+port/data locations/certificate before installing anything.
+
 ## Read this first
 
 **All planned product features are built and were exercised against real Docker** in a disposable Ubuntu 24.04 container (agent as root, API as a non-root user, browser over HTTPS):
