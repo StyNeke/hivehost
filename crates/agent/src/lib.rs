@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+pub mod backups;
 pub mod commands;
 pub mod docker;
 pub mod engine;

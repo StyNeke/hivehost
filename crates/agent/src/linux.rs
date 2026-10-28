@@ -23,14 +23,14 @@ pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
 }
 // Lets the API service connect: the socket and its directory are given to the API user's
 // primary group (socket 0660, directory 0750). Only the API's UID passes the peer check anyway.
-pub fn grant_group(path: &Path, api_uid: u32) -> io::Result<()> {
+pub fn primary_gid(uid: u32) -> io::Result<u32> {
     // SAFETY: getpwuid_r writes into the provided buffers only.
-    let gid = unsafe {
+    unsafe {
         let mut entry: libc::passwd = std::mem::zeroed();
         let mut buffer = vec![0 as libc::c_char; 16 * 1024];
         let mut result: *mut libc::passwd = std::ptr::null_mut();
         if libc::getpwuid_r(
-            api_uid,
+            uid,
             &mut entry,
             buffer.as_mut_ptr(),
             buffer.len(),
@@ -43,8 +43,12 @@ pub fn grant_group(path: &Path, api_uid: u32) -> io::Result<()> {
                 "GM_API_UID does not name an existing user",
             ));
         }
-        entry.pw_gid
-    };
+        Ok(entry.pw_gid)
+    }
+}
+
+pub fn grant_group(path: &Path, api_uid: u32) -> io::Result<()> {
+    let gid = primary_gid(api_uid)?;
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket parent required"))?;

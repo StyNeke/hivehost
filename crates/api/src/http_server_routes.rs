@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, time::Duration};
 use uuid::Uuid;
 
+#[path = "http_backup_routes.rs"]
+pub(super) mod backups;
+
 fn runtime_error(err: RuntimeError) -> ApiError {
     match err {
         RuntimeError::NotFound => error(StatusCode::NOT_FOUND, "not_found", "Not found"),
@@ -429,6 +432,8 @@ pub(super) async fn reinstall(
 #[serde(deny_unknown_fields)]
 pub(super) struct DeleteRequest {
     confirm_name: String,
+    #[serde(default)]
+    keep_backups: bool,
 }
 
 pub(super) async fn delete(
@@ -452,9 +457,13 @@ pub(super) async fn delete(
             ));
         }
         let mut store = RuntimeStore::open(path).map_err(runtime_error)?;
-        if store.mark_deleting(server).map_err(runtime_error)? {
+        if store
+            .mark_deleting(server, request.keep_backups)
+            .map_err(runtime_error)?
+        {
+            let detail = request.keep_backups.then_some("backups kept");
             store
-                .record(Some(actor), server, "delete", "requested", None, now()?)
+                .record(Some(actor), server, "delete", "requested", detail, now()?)
                 .map_err(runtime_error)?;
         }
         Ok(())

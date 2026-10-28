@@ -54,7 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(agent) = agent.clone() {
         tokio::spawn(manager_api::worker::run(database.clone(), agent));
     }
-    let mut app = router_with_services(database, origin.clone(), agent, &modrinth);
+    let backup_root = PathBuf::from(
+        env::var("GM_BACKUP_ROOT").unwrap_or_else(|_| manager_api::http::BACKUP_ROOT.into()),
+    );
+    let mut app = router_with_services(database, origin.clone(), agent, &modrinth, &backup_root);
     if let Ok(directory) = env::var("GM_STATIC_DIR") {
         let directory = PathBuf::from(directory);
         if !directory.join("index.html").is_file() {

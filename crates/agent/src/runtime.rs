@@ -29,6 +29,9 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[path = "runtime_backups.rs"]
+mod backup_operations;
+
 pub const SERVER_LABEL: &str = "dev.game-manager.server";
 pub const INSTALL_LABEL: &str = "dev.game-manager.install";
 const INSTALL_TIMEOUT_SECS: u64 = 30 * 60;
@@ -552,7 +555,9 @@ impl Runtime {
                 storage::ensure_mounted(&self.layout, *id).await?;
             }
         }
-        Ok(())
+        drop(records);
+        self.clean_partial_backups()?;
+        self.recover_restores().await
     }
 
     pub async fn owned_ids(&self) -> std::collections::HashSet<Uuid> {
@@ -1481,7 +1486,7 @@ impl Runtime {
         Ok(format!("Installed {installed} file(s), removed {removed}"))
     }
 
-    pub async fn delete(self: &Arc<Self>, id: Uuid) -> AgentResult {
+    pub async fn delete(self: &Arc<Self>, id: Uuid, keep_backups: bool) -> AgentResult {
         {
             let mut records = self.records.lock().await;
             let Some(record) = records.get_mut(&id) else {
@@ -1505,7 +1510,7 @@ impl Runtime {
         }
         let runtime = Arc::clone(self);
         tokio::spawn(async move {
-            match runtime.run_delete(id).await {
+            match runtime.run_delete(id, keep_backups).await {
                 Ok(()) => {
                     runtime.records.lock().await.remove(&id);
                 }
@@ -1515,8 +1520,11 @@ impl Runtime {
         AgentResult::Accepted
     }
 
-    async fn run_delete(&self, id: Uuid) -> io::Result<()> {
+    async fn run_delete(&self, id: Uuid, keep_backups: bool) -> io::Result<()> {
         self.remove_container(&runtime_name(id)).await?;
+        if !keep_backups {
+            self.remove_all_backups(id)?;
+        }
         self.remove_container(&install_name(id)).await?;
         storage::remove_volume(&self.layout, id).await?;
         match std::fs::remove_dir_all(self.layout.scripts(id)) {

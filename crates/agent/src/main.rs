@@ -57,6 +57,12 @@ fn config_from_env() -> Result<manager_agent::host::AgentConfig, Box<dyn std::er
             return Err("GM_STOP_GRACE_SECS must be between 5 and 3600".into());
         }
     }
+    if let Ok(root) = env::var("GM_BACKUP_ROOT") {
+        config.backup_root = PathBuf::from(root);
+        if !config.backup_root.is_absolute() {
+            return Err("GM_BACKUP_ROOT must be an absolute path".into());
+        }
+    }
     if let Ok(subnet) = env::var("GM_NETWORK_SUBNET") {
         config.network_subnet = subnet;
     }
@@ -75,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         signal::unix::{SignalKind, signal},
         sync::Semaphore,
     };
-    let config = config_from_env()?;
+    let mut config = config_from_env()?;
     let arguments: Vec<_> = env::args().skip(1).collect();
     if arguments == ["inspect-host"] {
         println!(
@@ -99,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _instance = manager_agent::storage::lock_instance(&manager_agent::storage::Layout {
         data_root: config.data_root.clone(),
     })?;
+    config.api_gid = Some(manager_agent::linux::primary_gid(api_uid)?);
     let runtime = Arc::new(Runtime::new(config));
     runtime.load().await?;
     let listener = bind_private(&path)?;

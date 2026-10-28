@@ -83,3 +83,28 @@ test('deletion requires the exact name and losing access stops polling', async (
   await new Promise(resolve => setTimeout(resolve, 2500));
   expect(vi.mocked(fetch).mock.calls.length).toBe(fetchAfter);
 });
+
+test('backups can be created, restored only when stopped, and kept when deleting', async () => {
+  const backup = { id: 'b1', kind: 'manual', created_at: 1793140000, size_bytes: 5 * 1024 ** 2 };
+  const calls = mock({ detail: detail('running', true) });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.stubGlobal('fetch', vi.fn(async (path: string, options?: RequestInit) => {
+    if (path === '/api/servers/s1/backups' && (options?.method ?? 'GET') === 'GET') return Response.json({ retention: 3, backups: [backup, { ...backup, id: 'b2' }] });
+    return original(path, options);
+  }));
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  render(ServerWorkspace, { serverId: 's1', onBack: () => {}, onDeleted: () => {} });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('tab', { name: /Backups/ }));
+  expect((await screen.findAllByRole('link', { name: 'Download' }))[0].getAttribute('href')).toBe('/api/servers/s1/backups/b1/download');
+  expect((screen.getAllByRole('button', { name: /^Restore backup/ })[0] as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'Create backup' }));
+  await screen.findByText(/server stops while the archive is written/);
+  await user.selectOptions(screen.getByLabelText(/Keep/), '1');
+  await waitFor(() => expect(calls.some(c => c.path.endsWith('/backups/retention') && c.body.retention === 1 && c.body.remove_oldest === true)).toBe(true));
+  await user.click(screen.getByRole('tab', { name: /Delete/ }));
+  await user.type(screen.getByLabelText(/to confirm/), 'Bots');
+  await user.click(screen.getByLabelText(/Keep this server's backups/));
+  await user.click(screen.getByRole('button', { name: 'Delete server' }));
+  await waitFor(() => expect(calls.some(c => c.method === 'DELETE' && c.body.keep_backups === true)).toBe(true));
+});

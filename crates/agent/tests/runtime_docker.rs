@@ -12,7 +12,8 @@ use manager_core::{
     host::{PortBinding, Transport},
 };
 use manager_protocol::{
-    AgentResult, ExtensionFolder, OperationState, PowerState, RuntimeStatus, ServerSpec,
+    AgentResult, BackupKind, ExtensionFolder, OperationKind, OperationState, PowerState,
+    RuntimeStatus, ServerSpec,
 };
 use std::{collections::BTreeMap, process::Command, sync::Arc, time::Duration};
 use uuid::Uuid;
@@ -30,6 +31,8 @@ while read -r line; do
     stop) echo "Stopping"; exit 0 ;;
     crash) echo "crashing"; exit 3 ;;
     hang) trap '' INT TERM; while true; do sleep 1; done ;;
+    write*) echo "${line#write }" > data.txt; echo "wrote ${line#write }" ;;
+    read) echo "data: $(cat data.txt)" ;;
     *) echo "cmd: $line" ;;
   esac
 done
@@ -138,6 +141,8 @@ async fn a_server_installs_runs_restarts_stops_and_is_deleted_cleanly() {
     let network = format!("gm-test-{}", &Uuid::new_v4().simple().to_string()[..8]);
     let config = AgentConfig {
         data_root: data.path().to_path_buf(),
+        backup_root: data.path().join("backups"),
+        disk_reserve_bytes: 0,
         uid_base: 300_000,
         stop_grace_secs: 5,
         network_name: network.clone(),
@@ -275,12 +280,105 @@ async fn a_server_installs_runs_restarts_stops_and_is_deleted_cleanly() {
     .await;
     assert!(forced.problem.unwrap().contains("force-stopped"));
 
+    // Backups: a running server is stopped for the archive and comes back up afterwards.
+    assert_eq!(runtime.start(spec.clone()).await, AgentResult::Accepted);
+    wait_for(&runtime, id, 60, |s| s.power == PowerState::Running).await;
+    runtime.send_command(id, "write original").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        rejected_code(runtime.create_backup(id, 9).await),
+        "invalid_retention"
+    );
+    assert_eq!(runtime.create_backup(id, 2).await, AgentResult::Accepted);
+    assert_eq!(rejected_code(runtime.create_backup(id, 2).await), "busy");
+    let backed_up = wait_for(&runtime, id, 120, |s| {
+        s.operation.as_ref().is_some_and(|op| {
+            op.kind == OperationKind::Backup && op.state != OperationState::Running
+        })
+    })
+    .await;
+    assert_eq!(
+        backed_up.operation.unwrap().state,
+        OperationState::Succeeded
+    );
+    wait_for(&runtime, id, 60, |s| s.power == PowerState::Running).await;
+    let original = match runtime.list_backups(id).await {
+        AgentResult::Backups(backups) => backups,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(original.len(), 1);
+    let archive = data
+        .path()
+        .join("backups")
+        .join(id.to_string())
+        .join(format!("{}.tar.gz", original[0].id));
+    assert_eq!(
+        std::fs::metadata(&archive).unwrap().len(),
+        original[0].size_bytes
+    );
+    runtime.send_command(id, "write changed").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        rejected_code(runtime.restore_backup(id, original[0].id).await),
+        "running"
+    );
+    assert_eq!(runtime.stop(id).await, AgentResult::Accepted);
+    wait_for(&runtime, id, 30, |s| s.power == PowerState::Offline).await;
+    assert_eq!(
+        runtime.restore_backup(id, original[0].id).await,
+        AgentResult::Accepted
+    );
+    let restored = wait_for(&runtime, id, 120, |s| {
+        s.operation.as_ref().is_some_and(|op| {
+            op.kind == OperationKind::Restore && op.state != OperationState::Running
+        })
+    })
+    .await;
+    assert_eq!(
+        restored.operation.as_ref().unwrap().state,
+        OperationState::Succeeded,
+        "{restored:?}"
+    );
+    assert_eq!(runtime.start(spec.clone()).await, AgentResult::Accepted);
+    wait_for(&runtime, id, 60, |s| s.power == PowerState::Running).await;
+    runtime.send_command(id, "read").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        console(&runtime, id).await.contains("data: original"),
+        "restore brought back the backed-up data"
+    );
+    let kinds: Vec<_> = match runtime.list_backups(id).await {
+        AgentResult::Backups(backups) => backups.into_iter().map(|b| b.kind).collect(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        kinds,
+        [BackupKind::PreRestore, BackupKind::Manual],
+        "the replaced data was kept"
+    );
+    // A tampered archive is refused before anything changes.
+    assert_eq!(runtime.stop(id).await, AgentResult::Accepted);
+    wait_for(&runtime, id, 30, |s| s.power == PowerState::Offline).await;
+    std::fs::write(&archive, b"tampered").unwrap();
+    runtime.restore_backup(id, original[0].id).await;
+    let refused = wait_for(&runtime, id, 60, |s| {
+        s.operation.as_ref().is_some_and(|op| {
+            op.kind == OperationKind::Restore && op.state != OperationState::Running
+        })
+    })
+    .await;
+    assert!(refused.operation.unwrap().message.contains("damaged"));
+    assert_eq!(
+        runtime.delete_backup(id, original[0].id).await,
+        AgentResult::Accepted
+    );
+
     // The registry survives an agent restart.
     let reloaded = Arc::new(Runtime::new(runtime.config.clone()));
     reloaded.load().await.unwrap();
     assert!(status(&reloaded, id).await.installed);
 
-    assert_eq!(runtime.delete(id).await, AgentResult::Accepted);
+    assert_eq!(runtime.delete(id, false).await, AgentResult::Accepted);
     for _ in 0..120 {
         if matches!(runtime.status(id).await, AgentResult::Rejected(_)) {
             break;

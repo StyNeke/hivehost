@@ -17,6 +17,9 @@ pub struct AgentConfig {
     pub network_subnet: String,
     pub stop_grace_secs: u64,
     pub docker_socket: PathBuf,
+    // Backups live outside server volumes; the API's group may read them to stream downloads.
+    pub backup_root: PathBuf,
+    pub api_gid: Option<u32>,
 }
 
 impl Default for AgentConfig {
@@ -33,6 +36,8 @@ impl Default for AgentConfig {
             network_subnet: "172.30.250.0/24".into(),
             stop_grace_secs: 120,
             docker_socket: "/var/run/docker.sock".into(),
+            backup_root: "/var/lib/game-manager-backups".into(),
+            api_gid: None,
         }
     }
 }

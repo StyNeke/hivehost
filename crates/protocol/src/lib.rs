@@ -94,7 +94,42 @@ pub enum Operation {
     },
     DeleteServer {
         server_id: Uuid,
+        // Keep the server's backups after deletion; they remain listable and downloadable.
+        #[serde(default)]
+        keep_backups: bool,
     },
+    CreateBackup {
+        server_id: Uuid,
+        retention: u8,
+    },
+    ListBackups {
+        server_id: Uuid,
+    },
+    RestoreBackup {
+        server_id: Uuid,
+        backup_id: Uuid,
+    },
+    DeleteBackup {
+        server_id: Uuid,
+        backup_id: Uuid,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupKind {
+    Manual,
+    // Made automatically before a restore so the replaced data can be recovered.
+    PreRestore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupInfo {
+    pub id: Uuid,
+    pub kind: BackupKind,
+    pub created_at: i64,
+    pub size_bytes: u64,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +138,8 @@ pub enum OperationKind {
     Install,
     Extensions,
     Delete,
+    Backup,
+    Restore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,4 +213,5 @@ pub enum AgentResult {
     ServerStatus(Box<RuntimeStatus>),
     Console(Vec<String>),
     Files(Vec<String>),
+    Backups(Vec<BackupInfo>),
 }

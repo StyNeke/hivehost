@@ -14,6 +14,8 @@
   let busy = $state(false);
   let page = $state<'servers' | 'library' | 'team' | 'server'>('servers');
   let servers = $state<Server[]>([]);
+  type Retained = { server_id: string; name: string; deleted_at: number; backups: { id: string; created_at: number; size_bytes: number }[] };
+  let retained = $state<Retained[]>([]);
   let eggs = $state<Egg[]>([]);
   let username = $state('');
   let password = $state('');
@@ -35,7 +37,17 @@
   }
   async function loadData() {
     [servers, eggs] = await Promise.all([api<Server[]>('/api/servers'), api<Egg[]>('/api/eggs')]);
+    // Kept backups of deleted servers are secondary; the list must load even if the agent is down.
+    retained = await api<Retained[]>('/api/retained-backups').catch(() => []);
   }
+  async function deleteRetained(server: Retained, backup: Retained['backups'][number]) {
+    if (!confirm(`Delete this kept backup of ${server.name}? This cannot be undone.`)) return;
+    await run(async () => {
+      await api(`/api/servers/${server.server_id}/backups/${backup.id}`, { method: 'DELETE' });
+      retained = await api<Retained[]>('/api/retained-backups').catch(() => []);
+    });
+  }
+  function date(at: number) { return new Date(at * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); }
   async function run(action: () => Promise<void>) {
     busy = true; error = ''; notice = '';
     try { await action(); } catch (reason) { showError(reason); } finally { busy = false; }
@@ -150,6 +162,11 @@
             <div class="empty-state"><div class="empty-icon"><Icon name="servers" size={25} /></div><h2>A home for your next world</h2><p>Your servers will appear here. Start by adding game definitions to the shared egg library.</p><button class="secondary" onclick={() => navigate('library')}>Open egg library <Icon name="arrow" size={15} /></button></div>
           {:else if !filteredServers.length}<div class="empty-state"><h2>No matching servers</h2><p>Try another name.</p></div>
           {:else}<div class="server-list">{#each filteredServers as server (server.id)}<button class="server-card" disabled={!server.can_access} onclick={() => openServer(server)}><span class="server-symbol"><Icon name="servers" size={21} /></span><span class="server-name"><strong>{server.name}</strong><small>{server.can_access ? 'Open server' : 'Access not granted'}</small></span><span class="server-usage">{#if server.usage}<span>{server.usage.cpu_percent.toFixed(1)}% CPU</span><span>{memory(server.usage.memory_bytes)} RAM</span><span>{memory(server.usage.disk_bytes)} disk</span>{:else}<span>Usage unavailable</span>{/if}</span>{#if server.can_access}<Icon name="chevron" size={16} />{:else}<Icon name="lock" size={16} />{/if}</button>{/each}</div>{/if}
+          {#if retained.length}
+            <section class="retained" aria-labelledby="retained-title"><h2 id="retained-title">Kept backups of deleted servers</h2><p class="muted">Visible to the people who had access when the server was deleted.</p>
+              <ul class="mod-list">{#each retained as server (server.server_id)}{#each server.backups as backup (backup.id)}<li><div><strong>{server.name}</strong><small>{date(backup.created_at)} · {Math.max(1, Math.round(backup.size_bytes / 1024 ** 2))} MiB</small></div><div class="row-actions"><a class="secondary" href={`/api/servers/${server.server_id}/backups/${backup.id}/download`} download>Download</a><button class="secondary danger" disabled={busy} onclick={() => deleteRetained(server, backup)}>Delete</button></div></li>{/each}{/each}</ul>
+            </section>
+          {/if}
         </section>
       {:else if page === 'library'}
         <section class="page-content">

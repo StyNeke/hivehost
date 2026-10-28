@@ -88,7 +88,23 @@ async fn runtime_operation(
                 .await
         }
         Operation::ListFiles { server_id, folder } => runtime.list_files(server_id, folder).await,
-        Operation::DeleteServer { server_id } => runtime.delete(server_id).await,
+        Operation::DeleteServer {
+            server_id,
+            keep_backups,
+        } => runtime.delete(server_id, keep_backups).await,
+        Operation::CreateBackup {
+            server_id,
+            retention,
+        } => runtime.create_backup(server_id, retention).await,
+        Operation::ListBackups { server_id } => runtime.list_backups(server_id).await,
+        Operation::RestoreBackup {
+            server_id,
+            backup_id,
+        } => runtime.restore_backup(server_id, backup_id).await,
+        Operation::DeleteBackup {
+            server_id,
+            backup_id,
+        } => runtime.delete_backup(server_id, backup_id).await,
         Operation::Ping | Operation::InspectHost => AgentResult::Unavailable,
     }
 }

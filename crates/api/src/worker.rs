@@ -70,12 +70,12 @@ pub async fn tick(
             });
         }
     }
-    for server in blocking(database, |path| {
+    for (server, keep_backups) in blocking(database, |path| {
         RuntimeStore::open(path)?.deleting_servers()
     })
     .await?
     {
-        advance_delete(database, agent, server).await?;
+        advance_delete(database, agent, server, keep_backups).await?;
     }
     Ok(())
 }
@@ -199,6 +199,7 @@ async fn advance_delete(
     database: &Path,
     agent: &AgentClient,
     server: ServerId,
+    keep_backups: bool,
 ) -> Result<(), RuntimeError> {
     let status = agent
         .call(Operation::ServerStatus {
@@ -209,7 +210,7 @@ async fn advance_delete(
     match status {
         AgentResult::Rejected(rejection) if rejection.code == "not_found" => {
             blocking(database, move |path| {
-                RuntimeStore::open(path)?.finish_delete(server)
+                RuntimeStore::open(path)?.finish_delete(server, keep_backups)
             })
             .await
         }
@@ -226,6 +227,7 @@ async fn advance_delete(
             let _ = agent
                 .call(Operation::DeleteServer {
                     server_id: server.0,
+                    keep_backups,
                 })
                 .await;
             Ok(())

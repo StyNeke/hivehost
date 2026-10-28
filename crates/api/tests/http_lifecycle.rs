@@ -17,8 +17,8 @@ use manager_core::{
     host::{HostAdmission, HostHardware, HostStatus},
 };
 use manager_protocol::{
-    AgentRequest, AgentResponse, AgentResult, DetectedGame, Operation, OperationKind,
-    OperationState, OperationStatus, PowerState, Rejection, RuntimeStatus, VERSION,
+    AgentRequest, AgentResponse, AgentResult, BackupInfo, BackupKind, DetectedGame, Operation,
+    OperationKind, OperationState, OperationStatus, PowerState, Rejection, RuntimeStatus, VERSION,
 };
 use serde_json::{Value, json};
 use std::{
@@ -58,7 +58,12 @@ struct FakeServer {
 struct FakeAgent {
     servers: HashMap<Uuid, FakeServer>,
     fail_next_install: bool,
+    backup_root: std::path::PathBuf,
+    backups: HashMap<Uuid, Vec<BackupInfo>>,
+    retention: HashMap<Uuid, u8>,
 }
+
+const BACKUP_BYTES: usize = 20 * 1024 * 1024;
 
 fn op(kind: OperationKind, state: OperationState, message: &str) -> Option<OperationStatus> {
     Some(OperationStatus {
@@ -174,6 +179,34 @@ impl FakeAgent {
                             self.servers.remove(&server_id);
                             return rejection("not_found", "server not found");
                         }
+                        OperationKind::Backup => {
+                            let id = Uuid::new_v4();
+                            let directory = self.backup_root.join(server_id.to_string());
+                            std::fs::create_dir_all(&directory).unwrap();
+                            std::fs::write(
+                                directory.join(format!("{id}.tar.gz")),
+                                vec![9u8; BACKUP_BYTES],
+                            )
+                            .unwrap();
+                            let list = self.backups.entry(server_id).or_default();
+                            list.insert(
+                                0,
+                                BackupInfo {
+                                    id,
+                                    kind: BackupKind::Manual,
+                                    created_at: now(),
+                                    size_bytes: BACKUP_BYTES as u64,
+                                    sha256: "0".repeat(64),
+                                },
+                            );
+                            list.truncate(self.retention[&server_id] as usize);
+                            current.state = OperationState::Succeeded;
+                            current.message = "Backup created".into();
+                        }
+                        OperationKind::Restore => {
+                            current.state = OperationState::Succeeded;
+                            current.message = "Backup restored".into();
+                        }
                     }
                 }
                 AgentResult::ServerStatus(Box::new(RuntimeStatus {
@@ -223,7 +256,59 @@ impl FakeAgent {
                     .map(|s| s.files.clone())
                     .unwrap_or_default(),
             ),
-            Operation::DeleteServer { server_id } => {
+            Operation::CreateBackup {
+                server_id,
+                retention,
+            } => {
+                let Some(server) = self.servers.get_mut(&server_id) else {
+                    return rejection("not_found", "server not found");
+                };
+                self.retention.insert(server_id, retention);
+                server.operation = op(OperationKind::Backup, OperationState::Running, "Writing");
+                AgentResult::Accepted
+            }
+            Operation::ListBackups { server_id } => {
+                AgentResult::Backups(self.backups.get(&server_id).cloned().unwrap_or_default())
+            }
+            Operation::RestoreBackup {
+                server_id,
+                backup_id,
+            } => match self.servers.get_mut(&server_id) {
+                Some(server) if server.running => {
+                    rejection("running", "stop the server before restoring a backup")
+                }
+                Some(server)
+                    if self
+                        .backups
+                        .get(&server_id)
+                        .is_some_and(|b| b.iter().any(|b| b.id == backup_id)) =>
+                {
+                    server.operation =
+                        op(OperationKind::Restore, OperationState::Running, "Restoring");
+                    AgentResult::Accepted
+                }
+                _ => rejection("not_found", "backup not found"),
+            },
+            Operation::DeleteBackup {
+                server_id,
+                backup_id,
+            } => {
+                let list = self.backups.entry(server_id).or_default();
+                let before = list.len();
+                list.retain(|b| b.id != backup_id);
+                if list.len() == before {
+                    rejection("not_found", "backup not found")
+                } else {
+                    AgentResult::Accepted
+                }
+            }
+            Operation::DeleteServer {
+                server_id,
+                keep_backups,
+            } => {
+                if !keep_backups {
+                    self.backups.remove(&server_id);
+                }
                 if let Some(server) = self.servers.get_mut(&server_id) {
                     server.operation =
                         op(OperationKind::Delete, OperationState::Running, "Deleting");
@@ -416,18 +501,25 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
         .bootstrap_admin("admin", "a long test password")
         .unwrap();
     let mut cookies = vec![];
-    for name in ["owner", "outsider"] {
+    let mut member_id = None;
+    for name in ["owner", "outsider", "member"] {
         let invite = auth.invite(&admin, now()).unwrap();
-        auth.register(&invite, name, "a long test password", now())
+        let user = auth
+            .register(&invite, name, "a long test password", now())
             .unwrap();
+        if name == "member" {
+            member_id = Some(user.id);
+        }
     }
-    for name in ["admin", "owner", "outsider"] {
+    for name in ["admin", "owner", "outsider", "member"] {
         cookies.push(format!(
             "__Host-gm_session={}",
             auth.login(name, "a long test password", now()).unwrap()
         ));
     }
-    let (admin_cookie, owner, outsider) = (&cookies[0], &cookies[1], &cookies[2]);
+    let (admin_cookie, owner, outsider, member) =
+        (&cookies[0], &cookies[1], &cookies[2], &cookies[3]);
+    let member_id = member_id.unwrap();
     let revision = EggStore::open(&database)
         .unwrap()
         .import(
@@ -436,7 +528,11 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
         )
         .unwrap()
         .revision;
-    let fake = Arc::new(Mutex::new(FakeAgent::default()));
+    let backup_root = dir.path().join("backups");
+    let fake = Arc::new(Mutex::new(FakeAgent {
+        backup_root: backup_root.clone(),
+        ..Default::default()
+    }));
     let socket = dir.path().join("agent.sock");
     spawn_agent(&socket, fake.clone());
     let agent = AgentClient::new(&socket, std::fs::metadata("/proc/self").unwrap().uid());
@@ -445,6 +541,7 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
         ORIGIN.into(),
         Some(agent.clone()),
         &spawn_modrinth().await,
+        &backup_root,
     );
     let slots = Arc::new(tokio::sync::Semaphore::new(2));
     let tick = || worker::tick(&database, &agent, "test-worker", &slots);
@@ -859,6 +956,221 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
     })
     .await;
 
+    // Backups: retention lowering and restores need confirmation; downloads stream and stop
+    // when access is revoked midway.
+    let backups = format!("{server}/backups");
+    assert_eq!(
+        send(&app, "GET", &backups, owner, None).await.1["retention"],
+        3
+    );
+    for _ in 0..3 {
+        assert_eq!(
+            send(&app, "POST", &backups, owner, None).await.0,
+            StatusCode::ACCEPTED
+        );
+        eventually(&app, &server, owner, |d| {
+            d["runtime"]["operation"]["state"] == "succeeded"
+        })
+        .await;
+    }
+    let list = send(&app, "GET", &backups, owner, None).await.1;
+    assert_eq!(list["backups"].as_array().unwrap().len(), 3);
+    let (code, body) = send(
+        &app,
+        "PUT",
+        &format!("{backups}/retention"),
+        owner,
+        Some(json!({"retention": 1})),
+    )
+    .await;
+    assert_eq!(
+        (code, body["code"].as_str()),
+        (StatusCode::CONFLICT, Some("confirm_removal"))
+    );
+    let (code, body) = send(
+        &app,
+        "PUT",
+        &format!("{backups}/retention"),
+        owner,
+        Some(json!({"retention": 2, "remove_oldest": true})),
+    )
+    .await;
+    assert_eq!(
+        (code, body["removed"].as_array().unwrap().len()),
+        (StatusCode::OK, 1)
+    );
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            &format!("{backups}/retention"),
+            owner,
+            Some(json!({"retention": 6}))
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let list = send(&app, "GET", &backups, owner, None).await.1;
+    assert_eq!(
+        (
+            list["retention"].as_u64(),
+            list["backups"].as_array().unwrap().len()
+        ),
+        (Some(2), 2)
+    );
+    let newest = list["backups"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            &format!("{backups}/{newest}/restore"),
+            owner,
+            Some(json!({"confirm": false}))
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    send(
+        &app,
+        "POST",
+        &format!("{server}/power"),
+        owner,
+        Some(json!({"action": "start"})),
+    )
+    .await;
+    let (code, body) = send(
+        &app,
+        "POST",
+        &format!("{backups}/{newest}/restore"),
+        owner,
+        Some(json!({"confirm": true})),
+    )
+    .await;
+    assert_eq!(
+        (code, body["code"].as_str()),
+        (StatusCode::CONFLICT, Some("server_running"))
+    );
+    send(
+        &app,
+        "POST",
+        &format!("{server}/power"),
+        owner,
+        Some(json!({"action": "stop"})),
+    )
+    .await;
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            &format!("{backups}/{newest}/restore"),
+            owner,
+            Some(json!({"confirm": true}))
+        )
+        .await
+        .0,
+        StatusCode::ACCEPTED
+    );
+    eventually(&app, &server, owner, |d| {
+        d["runtime"]["operation"]["kind"] == "restore"
+            && d["runtime"]["operation"]["state"] == "succeeded"
+    })
+    .await;
+    assert_eq!(
+        send(
+            &app,
+            "GET",
+            &format!("{backups}/{newest}/download"),
+            outsider,
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let full = app
+        .clone()
+        .oneshot(
+            Request::get(format!("{backups}/{newest}/download"))
+                .header("cookie", owner)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(full.status(), StatusCode::OK);
+    assert_eq!(full.headers()["content-length"], BACKUP_BYTES.to_string());
+    assert!(
+        full.headers()["content-disposition"]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment; filename=\"Bots-")
+    );
+    assert_eq!(
+        to_bytes(full.into_body(), BACKUP_BYTES + 1)
+            .await
+            .unwrap()
+            .len(),
+        BACKUP_BYTES
+    );
+    let grant = |enabled: bool| json!({"enabled": enabled});
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            &format!("{server}/members/{}", member_id.0),
+            owner,
+            Some(grant(true))
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let streaming = app
+        .clone()
+        .oneshot(
+            Request::get(format!("{backups}/{newest}/download"))
+                .header("cookie", member)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(streaming.status(), StatusCode::OK);
+    let mut chunks = streaming.into_body().into_data_stream();
+    use futures_util::StreamExt;
+    let mut received = 0usize;
+    while received < 1024 * 1024 {
+        received += chunks.next().await.unwrap().unwrap().len();
+    }
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            &format!("{server}/members/{}", member_id.0),
+            owner,
+            Some(grant(false))
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let mut failed = false;
+    while let Some(chunk) = chunks.next().await {
+        match chunk {
+            Ok(bytes) => received += bytes.len(),
+            Err(_) => {
+                failed = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        failed && received < BACKUP_BYTES,
+        "revoked download stopped after {received} bytes"
+    );
+
     // Deletion needs the exact name, then frees the reservation and the allocation.
     let (code, body) = send(
         &app,
@@ -878,7 +1190,7 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
             "DELETE",
             &server,
             owner,
-            Some(json!({"confirm_name": "Bots"}))
+            Some(json!({"confirm_name": "Bots", "keep_backups": true}))
         )
         .await
         .0,
@@ -910,5 +1222,72 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
         host["reserved"]["memory_bytes"],
         3 * GIB,
         "only the remaining server is reserved"
+    );
+
+    // Kept backups stay visible to the deletion-time access list only.
+    let retained = send(&app, "GET", "/api/retained-backups", owner, None)
+        .await
+        .1;
+    assert_eq!(
+        (
+            retained[0]["name"].as_str(),
+            retained[0]["backups"].as_array().unwrap().len()
+        ),
+        (Some("Bots"), 2)
+    );
+    assert_eq!(
+        send(&app, "GET", "/api/retained-backups", outsider, None)
+            .await
+            .1,
+        json!([])
+    );
+    assert_eq!(
+        send(&app, "GET", "/api/retained-backups", member, None)
+            .await
+            .1,
+        json!([]),
+        "member access was revoked before deletion"
+    );
+    assert_eq!(
+        send(&app, "GET", "/api/retained-backups", admin_cookie, None)
+            .await
+            .1
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let download = format!("{backups}/{newest}/download");
+    assert_eq!(
+        app.clone()
+            .oneshot(
+                Request::get(&download)
+                    .header("cookie", owner)
+                    .body(Body::empty())
+                    .unwrap()
+            )
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&app, "GET", &download, outsider, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+    for backup in retained[0]["backups"].as_array().unwrap() {
+        let id = backup["id"].as_str().unwrap();
+        assert_eq!(
+            send(&app, "DELETE", &format!("{backups}/{id}"), owner, None)
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert_eq!(
+        send(&app, "GET", "/api/retained-backups", owner, None)
+            .await
+            .1,
+        json!([])
     );
 }

@@ -91,6 +91,13 @@ pub struct ExtensionRecord {
     pub dependency: bool,
 }
 
+pub fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn uuid(value: String) -> Result<Uuid, RuntimeError> {
     value.parse().map_err(|_| RuntimeError::Invalid)
 }
@@ -261,7 +268,16 @@ impl RuntimeStore {
     }
 
     // Returns false when deletion was already requested.
-    pub fn mark_deleting(&mut self, server: ServerId) -> Result<bool, RuntimeError> {
+    pub fn mark_deleting(
+        &mut self,
+        server: ServerId,
+        keep_backups: bool,
+    ) -> Result<bool, RuntimeError> {
+        self.0.execute(
+            "INSERT INTO deletion_requests VALUES (?1, ?2)
+             ON CONFLICT(server_id) DO UPDATE SET keep_backups = keep_backups",
+            params![server.0.to_string(), keep_backups],
+        )?;
         let changed = self.0.execute(
             "UPDATE server_runtime SET deleting = 1 WHERE server_id = ?1 AND deleting = 0",
             [server.0.to_string()],
@@ -283,20 +299,120 @@ impl RuntimeStore {
         Ok(changed == 1)
     }
 
-    pub fn deleting_servers(&self) -> Result<Vec<ServerId>, RuntimeError> {
-        let mut statement = self
+    // Servers marked for deletion, with whether their backups are kept.
+    pub fn deleting_servers(&self) -> Result<Vec<(ServerId, bool)>, RuntimeError> {
+        let mut statement = self.0.prepare(
+            "SELECT t.server_id, COALESCE(d.keep_backups, 0) FROM server_runtime t
+             LEFT JOIN deletion_requests d ON d.server_id = t.server_id WHERE t.deleting = 1",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+        })?;
+        rows.map(|row| {
+            let (id, keep) = row?;
+            Ok((ServerId(uuid(id)?), keep))
+        })
+        .collect()
+    }
+
+    pub fn retention(&self, server: ServerId) -> Result<u8, RuntimeError> {
+        Ok(self
             .0
-            .prepare("SELECT server_id FROM server_runtime WHERE deleting = 1")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| Ok(ServerId(uuid(row?)?))).collect()
+            .query_row(
+                "SELECT retention FROM backup_settings WHERE server_id = ?1",
+                [server.0.to_string()],
+                |row| row.get::<_, u8>(0),
+            )
+            .optional()?
+            .unwrap_or(3))
+    }
+
+    pub fn set_retention(&mut self, server: ServerId, retention: u8) -> Result<(), RuntimeError> {
+        if !(1..=5).contains(&retention) {
+            return Err(RuntimeError::Conflict("keep between 1 and 5 backups"));
+        }
+        self.0.execute(
+            "INSERT INTO backup_settings VALUES (?1, ?2) ON CONFLICT(server_id) DO UPDATE SET retention = ?2",
+            params![server.0.to_string(), retention],
+        )?;
+        Ok(())
+    }
+
+    // Who may see backups of a server that no longer exists: the deletion-time owner and
+    // enabled members, and administrators.
+    pub fn retained_access(
+        &self,
+        actor: UserId,
+        server: ServerId,
+    ) -> Result<Option<String>, RuntimeError> {
+        Ok(self
+            .0
+            .query_row(
+                "SELECT r.server_name FROM retained_backups r
+                 WHERE r.server_id = ?1 AND (
+                    EXISTS(SELECT 1 FROM retained_backup_access a WHERE a.server_id = r.server_id AND a.user_id = ?2)
+                    OR EXISTS(SELECT 1 FROM users u WHERE u.id = ?2 AND u.is_admin = 1))",
+                params![server.0.to_string(), actor.0.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn retained_for(
+        &self,
+        actor: UserId,
+    ) -> Result<Vec<(ServerId, String, i64)>, RuntimeError> {
+        let mut statement = self.0.prepare(
+            "SELECT r.server_id, r.server_name, r.deleted_at FROM retained_backups r
+             WHERE EXISTS(SELECT 1 FROM retained_backup_access a WHERE a.server_id = r.server_id AND a.user_id = ?1)
+                OR EXISTS(SELECT 1 FROM users u WHERE u.id = ?1 AND u.is_admin = 1)
+             ORDER BY r.deleted_at DESC",
+        )?;
+        let rows = statement.query_map([actor.0.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, name, at) = row?;
+            Ok((ServerId(uuid(id)?), name, at))
+        })
+        .collect()
+    }
+
+    pub fn forget_retained(&mut self, server: ServerId) -> Result<(), RuntimeError> {
+        self.0.execute(
+            "DELETE FROM retained_backups WHERE server_id = ?1",
+            [server.0.to_string()],
+        )?;
+        Ok(())
     }
 
     // Removes the server and, through cascades, its reservation, allocation claim, members,
     // extensions and runtime record. The allocation returns to the free pool.
-    pub fn finish_delete(&mut self, server: ServerId) -> Result<(), RuntimeError> {
+    pub fn finish_delete(
+        &mut self,
+        server: ServerId,
+        keep_backups: bool,
+    ) -> Result<(), RuntimeError> {
         let transaction = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if keep_backups {
+            transaction.execute(
+                "INSERT OR REPLACE INTO retained_backups
+                 SELECT id, name, owner_id, strftime('%s','now') FROM servers WHERE id = ?1",
+                [server.0.to_string()],
+            )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO retained_backup_access
+                 SELECT ?1, owner_id FROM servers WHERE id = ?1
+                 UNION SELECT ?1, user_id FROM server_members WHERE server_id = ?1 AND enabled = 1",
+                [server.0.to_string()],
+            )?;
+        }
         let name: Option<String> = transaction
             .query_row(
                 "SELECT name FROM servers WHERE id = ?1",

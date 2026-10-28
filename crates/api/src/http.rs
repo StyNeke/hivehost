@@ -39,6 +39,7 @@ struct AppState {
     attempts: Arc<Mutex<VecDeque<Instant>>>,
     agent: Option<AgentClient>,
     modrinth: crate::modrinth::Modrinth,
+    backup_root: PathBuf,
 }
 
 #[path = "http_server_routes.rs"]
@@ -246,12 +247,20 @@ impl AppState {
 // Without an agent, host-dependent routes fail closed with host_unavailable/host_not_ready.
 pub const MODRINTH_API: &str = "https://api.modrinth.com/v2";
 
+pub const BACKUP_ROOT: &str = "/var/lib/game-manager-backups";
+
 pub fn router(database: PathBuf, origin: String) -> Router {
-    router_with_services(database, origin, None, MODRINTH_API)
+    router_with_services(database, origin, None, MODRINTH_API, BACKUP_ROOT.as_ref())
 }
 
 pub fn router_with_agent(database: PathBuf, origin: String, agent: AgentClient) -> Router {
-    router_with_services(database, origin, Some(agent), MODRINTH_API)
+    router_with_services(
+        database,
+        origin,
+        Some(agent),
+        MODRINTH_API,
+        BACKUP_ROOT.as_ref(),
+    )
 }
 
 // Serves the built browser interface from `directory` for every non-API path.
@@ -309,6 +318,7 @@ pub fn router_with_services(
     origin: String,
     agent: Option<AgentClient>,
     modrinth_api: &str,
+    backup_root: &std::path::Path,
 ) -> Router {
     let state = AppState {
         database,
@@ -317,6 +327,7 @@ pub fn router_with_services(
         attempts: Arc::new(Mutex::new(VecDeque::new())),
         agent,
         modrinth: crate::modrinth::Modrinth::new(modrinth_api),
+        backup_root: backup_root.to_path_buf(),
     };
     Router::new()
         .route("/api/login", post(login))
@@ -350,6 +361,30 @@ pub fn router_with_services(
         .route(
             "/api/servers/{id}/modrinth",
             get(server_routes::search_modrinth),
+        )
+        .route(
+            "/api/servers/{id}/backups",
+            get(server_routes::backups::list).post(server_routes::backups::create),
+        )
+        .route(
+            "/api/servers/{id}/backups/retention",
+            axum::routing::put(server_routes::backups::set_retention),
+        )
+        .route(
+            "/api/servers/{id}/backups/{backup}",
+            axum::routing::delete(server_routes::backups::remove),
+        )
+        .route(
+            "/api/servers/{id}/backups/{backup}/restore",
+            post(server_routes::backups::restore),
+        )
+        .route(
+            "/api/servers/{id}/backups/{backup}/download",
+            get(server_routes::backups::download),
+        )
+        .route(
+            "/api/retained-backups",
+            get(server_routes::backups::retained),
         )
         .route(
             "/api/eggs/revisions/{id}/qualification",

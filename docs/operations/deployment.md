@@ -61,7 +61,8 @@ sudo install -d -m 0700 /var/lib/game-manager /etc/game-manager
 GM_API_UID=<uid of game-manager-api, from `id -u game-manager-api`>
 GM_PRIVATE_IPS=100.116.183.201
 # Optional:
-# GM_DISK_RESERVE_BYTES=21474836480   space kept free for the OS (default 10 GiB)
+# GM_BACKUP_ROOT=/var/lib/game-manager-backups  backups (root:API group 0750; may be another disk)
+# GM_DISK_RESERVE_BYTES=21474836480   space kept free for the OS (default 10 GiB); backups never use it
 # GM_STOP_GRACE_SECS=120              per-server graceful stop time before a forced stop
 # GM_GAME_UID_BASE=200000             first per-server UID; keep the range unused
 # GM_NETWORK_SUBNET=172.30.250.0/24   managed Docker network; must not overlap others
@@ -119,3 +120,12 @@ were running start again, one at a time, when the agent starts. Docker restart p
 used for managed containers; the agent's crash policy (3 restarts per 10 minutes) applies.
 
 Only one agent may use a data directory; a second instance refuses to start.
+
+## Backups
+
+Backups are gzip tar archives under `GM_BACKUP_ROOT/<server>/`, verified after writing and
+recorded with a SHA-256. A running server is stopped for the backup and started again. Restores
+need a stopped server, check the checksum, save the current files as a pre-restore backup, then
+swap the restored files in; an interrupted restore is rolled back to the original files the next
+time the agent starts. Set `GM_BACKUP_ROOT` in `api.env` too if you change it (the API streams
+downloads from it). These are local backups: copy them elsewhere to survive a disk failure.

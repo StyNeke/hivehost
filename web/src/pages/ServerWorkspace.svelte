@@ -4,7 +4,7 @@
   import Icon from '../components/Icon.svelte';
 
   type Resources = { memory_bytes: number; disk_bytes: number; cpu_millis: number };
-  type Operation = { kind: 'install' | 'extensions' | 'delete'; state: 'running' | 'succeeded' | 'failed'; message: string };
+  type Operation = { kind: 'install' | 'extensions' | 'delete' | 'backup' | 'restore'; state: 'running' | 'succeeded' | 'failed'; message: string };
   type Runtime = {
     installed: boolean; operation: Operation | null; power: 'offline' | 'starting' | 'running' | 'stopping';
     desired_running: boolean; problem: string | null; started_at: number | null; exit_code: number | null;
@@ -21,11 +21,15 @@
   type Extensions = { game: Runtime['game']; available: boolean; reason: string | null; managed: Extension[]; other_files: string[] };
   type Hit = { project_id: string; title: string; description: string; downloads: number };
   type Activity = { at: number; actor: string | null; action: string; outcome: string; detail: string | null };
+  type Backup = { id: string; kind: 'manual' | 'pre_restore'; created_at: number; size_bytes: number };
 
   let { serverId, onBack, onDeleted }: { serverId: string; onBack: () => void; onDeleted: (name: string) => void } = $props();
 
   let detail = $state<Detail | null>(null);
-  let tab = $state<'console' | 'mods' | 'activity' | 'settings'>('console');
+  let tab = $state<'console' | 'mods' | 'backups' | 'activity' | 'settings'>('console');
+  let backups = $state<Backup[]>([]);
+  let retention = $state(3);
+  let keepBackups = $state(false);
   let lines = $state<string[]>([]);
   let command = $state('');
   let error = $state('');
@@ -51,6 +55,7 @@
     detail?.details?.deleting ? 'Deleting' :
     install === 'pending' ? 'Waiting to install' : install === 'installing' ? 'Installing' : install === 'failed' ? 'Install failed' :
     operation?.kind === 'extensions' ? 'Updating mods' :
+    operation?.kind === 'backup' ? 'Backing up' : operation?.kind === 'restore' ? 'Restoring' :
     { offline: 'Offline', starting: 'Starting', running: 'Running', stopping: 'Stopping' }[power]);
 
   function gib(bytes: number) { return `${(bytes / 1024 ** 3).toFixed(1)} GiB`; }
@@ -132,15 +137,49 @@
   async function loadActivity() {
     try { activity = await api<Activity[]>(`/api/servers/${serverId}/activity`); } catch (reason) { report(reason); }
   }
+  async function loadBackups() {
+    try {
+      const result = await api<{ retention: number; backups: Backup[] }>(`/api/servers/${serverId}/backups`);
+      backups = result.backups; retention = result.retention;
+    } catch (reason) { report(reason); }
+  }
+  const createBackup = () => act(async () => {
+    await api(`/api/servers/${serverId}/backups`, { method: 'POST' });
+    notice = power === 'offline' ? 'Creating a backup.' : 'Creating a backup. The server stops while the archive is written and starts again afterwards.';
+    setTimeout(loadBackups, 3000);
+  });
+  const changeRetention = (value: number) => act(async () => {
+    const manual = backups.filter(b => b.kind === 'manual').length;
+    let removeOldest = false;
+    if (manual > value) {
+      if (!confirm(`Keeping ${value} backup${value === 1 ? '' : 's'} removes the ${manual - value} oldest now. Continue?`)) { retention = retention; return; }
+      removeOldest = true;
+    }
+    await api(`/api/servers/${serverId}/backups/retention`, { method: 'PUT', body: JSON.stringify({ retention: value, remove_oldest: removeOldest }) });
+    await loadBackups();
+  });
+  const restoreBackup = (backup: Backup) => act(async () => {
+    if (!confirm(`Replace the server's current files with the backup from ${when(backup.created_at)}? The current files are saved as a pre-restore backup first.`)) return;
+    await api(`/api/servers/${serverId}/backups/${backup.id}/restore`, { method: 'POST', body: JSON.stringify({ confirm: true }) });
+    notice = 'Restoring the backup.';
+  });
+  const deleteBackup = (backup: Backup) => act(async () => {
+    if (!confirm(`Delete the backup from ${when(backup.created_at)}? This cannot be undone.`)) return;
+    await api(`/api/servers/${serverId}/backups/${backup.id}`, { method: 'DELETE' });
+    await loadBackups();
+  });
+  function size(bytes: number) { return bytes >= 1024 ** 3 ? gib(bytes) : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MiB`; }
+
   function open(next: typeof tab) {
     tab = next; error = ''; notice = '';
     if (next === 'mods') void loadExtensions();
+    if (next === 'backups') void loadBackups();
     if (next === 'activity') void loadActivity();
   }
   const retryInstall = () => act(async () => { await api(`/api/servers/${serverId}/reinstall`, { method: 'POST' }); }, 'Installation queued again.');
   async function remove(event: SubmitEvent) {
     event.preventDefault();
-    await act(async () => { await api(`/api/servers/${serverId}`, { method: 'DELETE', body: JSON.stringify({ confirm_name: confirmName }) }); }, 'Deleting the server…');
+    await act(async () => { await api(`/api/servers/${serverId}`, { method: 'DELETE', body: JSON.stringify({ confirm_name: confirmName, keep_backups: keepBackups }) }); }, 'Deleting the server…');
   }
 </script>
 
@@ -188,6 +227,7 @@
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected={tab === 'console'} class:active={tab === 'console'} onclick={() => open('console')}><Icon name="terminal" size={15} /> Console</button>
       <button role="tab" aria-selected={tab === 'mods'} class:active={tab === 'mods'} disabled={!installed} onclick={() => open('mods')}><Icon name="puzzle" size={15} /> Mods</button>
+      <button role="tab" aria-selected={tab === 'backups'} class:active={tab === 'backups'} disabled={!installed} onclick={() => open('backups')}><Icon name="archive" size={15} /> Backups</button>
       <button role="tab" aria-selected={tab === 'activity'} class:active={tab === 'activity'} onclick={() => open('activity')}><Icon name="activity" size={15} /> Activity</button>
       <button role="tab" aria-selected={tab === 'settings'} class:active={tab === 'settings'} onclick={() => open('settings')}><Icon name="trash" size={15} /> Delete</button>
     </div>
@@ -239,6 +279,30 @@
           <p class="muted">Loading mods…</p>
         {/if}
       </section>
+    {:else if tab === 'backups'}
+      <section class="panel backups-panel">
+        <div class="backup-heading">
+          <div><h2>Backups</h2><p>Stored on this host. A running server stops while its backup is written, then starts again. Local backups do not protect against a failed disk.</p></div>
+          <button class="primary" disabled={busy || !!operation} onclick={createBackup}>Create backup</button>
+        </div>
+        <label class="retention" for="retention">Keep
+          <select id="retention" value={retention} disabled={busy} onchange={(event) => changeRetention(Number(event.currentTarget.value))}>
+            {#each [1, 2, 3, 4, 5] as count}<option value={count}>{count}</option>{/each}
+          </select>
+          backups; the oldest is replaced only after a new backup succeeds.</label>
+        {#if !backups.length}<p class="muted">No backups yet.</p>{/if}
+        <ul class="mod-list">
+          {#each backups as backup (backup.id)}
+            <li><div><strong>{when(backup.created_at)}</strong><small>{size(backup.size_bytes)}{backup.kind === 'pre_restore' ? ' · saved automatically before a restore' : ''}</small></div>
+              <div class="row-actions">
+                <a class="secondary" href={`/api/servers/${serverId}/backups/${backup.id}/download`} download>Download</a>
+                <button class="secondary" aria-label={`Restore backup from ${when(backup.created_at)}`} disabled={busy || !stopped || !!operation} onclick={() => restoreBackup(backup)}>Restore</button>
+                <button class="secondary danger" aria-label={`Delete backup from ${when(backup.created_at)}`} disabled={busy || !!operation} onclick={() => deleteBackup(backup)}>Delete</button>
+              </div></li>
+          {/each}
+        </ul>
+        {#if !stopped && backups.length}<p class="muted">Stop the server to restore a backup.</p>{/if}
+      </section>
     {:else if tab === 'activity'}
       <section class="panel">
         {#if !activity.length}<p class="muted">No activity yet.</p>{/if}
@@ -251,9 +315,10 @@
     {:else}
       <form class="panel danger-panel" onsubmit={remove}>
         <h2>Delete this server</h2>
-        <p>The server is stopped and its files, world and mods are permanently removed. Its address and reserved resources become available again.</p>
+        <p>The server is stopped and its files, world and mods are permanently removed. Its address and reserved resources become available again. Backups are removed too unless you keep them.</p>
         <label for="confirm-name">Type <strong>{detail.name}</strong> to confirm</label>
         <input id="confirm-name" bind:value={confirmName} autocomplete="off" />
+        <label class="checkbox"><input type="checkbox" bind:checked={keepBackups} /> Keep this server's backups (people with access now can still download them)</label>
         <button class="secondary danger" disabled={busy || confirmName !== detail.name || detail.details.deleting}>Delete server</button>
       </form>
     {/if}

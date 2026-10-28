@@ -46,6 +46,16 @@ impl ServerStore {
         Ok(Self(crate::database::open(path)?))
     }
 
+    pub fn exists(&self, server: ServerId) -> bool {
+        self.0
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM servers WHERE id = ?1)",
+                [server.0.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap_or(true)
+    }
+
     pub fn list(&self, actor: UserId) -> Result<Vec<ServerSummary>, ServerError> {
         let actor = load_user(&self.0, actor)?;
         let mut query = self.0.prepare("SELECT s.id, s.name, s.owner_id, COALESCE(m.enabled, 0) FROM servers s
