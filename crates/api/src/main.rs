@@ -66,6 +66,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("API listening on {address}; expected private HTTPS origin: {origin}");
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
+            // systemd stops services with SIGTERM; interactive runs use Ctrl+C.
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                match signal(SignalKind::terminate()) {
+                    Ok(mut terminate) => {
+                        tokio::select! {
+                            _ = terminate.recv() => {}
+                            _ = tokio::signal::ctrl_c() => {}
+                        }
+                    }
+                    Err(_) => {
+                        let _ = tokio::signal::ctrl_c().await;
+                    }
+                }
+            }
+            #[cfg(not(unix))]
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;

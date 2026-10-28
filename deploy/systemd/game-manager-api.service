@@ -1,0 +1,38 @@
+# Web API and interface. Unprivileged; reaches the host only through the agent socket.
+[Unit]
+Description=Game manager web API
+Documentation=file:///usr/local/share/game-manager/docs/deployment.md
+Wants=game-manager-agent.service
+After=game-manager-agent.service network-online.target
+
+[Service]
+Type=simple
+User=game-manager-api
+Group=game-manager-api
+ExecStart=/usr/local/bin/manager-api
+Environment=GM_DATABASE=/var/lib/game-manager-api/app.sqlite
+Environment=GM_STATIC_DIR=/usr/local/share/game-manager/web
+Environment=GM_AGENT_SOCKET=/run/game-manager/agent.sock
+Environment=GM_AGENT_UID=0
+# GM_ORIGIN (required): the exact private HTTPS origin users open.
+EnvironmentFile=/etc/game-manager/api.env
+StateDirectory=game-manager-api
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

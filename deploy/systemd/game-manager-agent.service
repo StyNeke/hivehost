@@ -1,0 +1,29 @@
+# Host agent: the only component with Docker and storage authority. Runs as root because it
+# creates loop-mounted quota volumes and switches file identity per server.
+[Unit]
+Description=Game manager host agent
+Documentation=file:///usr/local/share/game-manager/docs/deployment.md
+Requires=docker.service
+# Ordering also applies at shutdown: the agent stops its game servers before Docker, the
+# network and local filesystems go away.
+After=docker.service network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/manager-agent
+Environment=GM_DATA_ROOT=/var/lib/game-manager
+Environment=GM_AGENT_SOCKET=/run/game-manager/agent.sock
+# GM_API_UID (required), GM_PRIVATE_IPS and optional settings; see deployment.md.
+EnvironmentFile=/etc/game-manager/agent.env
+RuntimeDirectory=game-manager
+RuntimeDirectoryMode=0700
+# Servers get GM_STOP_GRACE_SECS (default 120) concurrently, then are force-stopped.
+TimeoutStopSec=180
+KillSignal=SIGTERM
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
