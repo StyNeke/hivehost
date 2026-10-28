@@ -37,7 +37,7 @@ NOPASSWD sudo drop-in the user created (`/etc/sudoers.d/90-claude-temp`; remove 
    / 2800 / 1800 MiB (`94125d3b`, `57d8f102`, `2e83460d`, `b556a801`; rollback 20000 / 4000 /
    15000 / 8000) — the user makes that change; remove the orphan installer (done:
    `docker rm 745af164…_installer`); treat uncapped legacy CPU as shared (agent change, commit
-   `41d96cd`). (b) Network isolation on. (c) Panel on `100.116.183.201:8443`, private CA.
+   `8081064`). (b) Network isolation on. (c) Panel on `100.116.183.201:8443`, private CA.
 6. **Problems found on the real host and fixed in code/runbook:** uncapped legacy CPU blocked
    creation; nginx starts ~11 s before `nordlynx` has its address, so the panel now runs as a
    separate nginx unit that retries (Pterodactyl's nginx is never touched) and the agent waits up
@@ -260,15 +260,15 @@ All implemented non-trivial slices were developed with failing tests first, then
 
 ## Latest completed milestone
 
-Goal session continued, 2026-10-28 (same Ubuntu 24.04 container with Docker 29.9; the container restarted once mid-session and everything came back up). Commits `46f2521` → `1b6d0c6` → `efc8a5d` and the documentation commit after them.
+Goal session continued, 2026-10-28 (same Ubuntu 24.04 container with Docker 29.9; the container restarted once mid-session and everything came back up). Commits `59f3e0d` → `a7dc250` → `9049b99` and the documentation commit after them.
 
-- **Settings, limits, metrics, members** (`46f2521`, `426b10b`): verified live on the Carpet Bots server.
+- **Settings, limits, metrics, members** (`59f3e0d`, `c424d58`): verified live on the Carpet Bots server.
   - Memory 3 → 3.5 GiB, disk 4 → 5 GiB (offline resize to a 5.2 GB filesystem at the next start).
   - Image switch to Java 21 and back, with the image re-pinned.
   - Usage reported (CPU millicores, memory).
   - A Carpet bot joined afterwards.
   - The Java 21 switch made Minecraft 26.3 crash; that led to explained, non-retried crash causes.
-- **Editions** (`1b6d0c6`): real installs and starts, then deletion:
+- **Editions** (`a7dc250`): real installs and starts, then deletion:
   - Vanilla 26.3.
   - Paper 26.3 with LuckPerms (Bukkit build). Modrinth reports plugins as `mod` projects, which used to be refused.
   - Forge 26.3 with No Chat Reports.
@@ -311,7 +311,7 @@ Goal session continued, 2026-10-28 (same Ubuntu 24.04 container with Docker 29.9
 
 Goal session, 2026-10-27/28 (Ubuntu 24.04 container with Docker 29.9 and loop devices, Rust 1.99.0, Node 22):
 
-- Agent game runner, per-server quota volumes and file identity isolation (`99927fd`); console/stdin, instance lock and egress trust fixes found by running the real Fabric egg (`8261147`); API worker, runtime routes and Modrinth (`fcf4bed`); server workspace and static serving (`3081be7`); browser acceptance and the UI fixes it found (`2465aab`); socket access for the non-root API (`40345b4`).
+- Agent game runner, per-server quota volumes and file identity isolation (`755fa27`); console/stdin, instance lock and egress trust fixes found by running the real Fabric egg (`5a6c586`); API worker, runtime routes and Modrinth (`dc0f6b1`); server workspace and static serving (`f6168a9`); browser acceptance and the UI fixes it found (`9930b97`); socket access for the non-root API (`8062e0d`).
 - **Acceptance passed** with `tests/host/fabric-carpet-acceptance.cjs`: agent as root, API as a dedicated non-root user, browser (headless Chromium) over HTTPS through `tests/host/tls-proxy.py`. Install of the unmodified upstream Fabric egg (Minecraft 26.3, detected from files) took ~30 s; Carpet 26.3 installed from Modrinth with SHA-512 verification; readiness detected; `player Bot_One/Two/Three spawn` sent from the console; `list` reported `There are 3 of a max of 20 players online`; graceful stop saved the worlds and exited 0. Carpet logs Mojang profile-lookup warnings for bot names without accounts; that is expected.
 - Also verified directly against the agent: graceful host shutdown (SIGTERM) stopped the running server and kept it desired-running; the next agent start restored it; a second agent refuses the same data root; forced stop after the grace period is recorded; hard quota refuses writes past the limit.
 - Edge cases found by real runs and fixed: `docker create -i` closed stdin after the first command (now `run --detach`); two agents on one data root; Netty needing exec on `/tmp`; TLS-inspecting egress; quick console commands dropped by the browser's implicit-submit rule; unreadable root-owned socket for a non-root API; API ignoring SIGTERM.
@@ -322,9 +322,9 @@ Goal session, 2026-10-27/28 (Ubuntu 24.04 container with Docker 29.9 and loop de
 
 Cloud session continuation, 2026-10-27 (Ubuntu 24.04 container, Rust 1.99.0 exactly as pinned, Node 22):
 
-- `8b0cd49`: implemented `AgentClient::inspect_host()` (the former `todo!()`). The three Linux transport tests were first observed failing on the stub, then passing. The 30-second freshness rule moved to `HostAdmission::is_fresh` and is shared with provisioning.
-- `0760c84`: host-backed HTTP routes listed above, `GM_AGENT_SOCKET`/`GM_AGENT_UID` configuration in `manager-api`. New Linux test `crates/api/tests/http_provisioning.rs` (fake agent on a real Unix socket) failed first, then passed: unconfigured agent, capacity overview, admin-only allocation add/duplicate, capacity rejection, successful creation and owner access, allocation reuse rejection, agent blockers.
-- `9e8e98b`: creation page replacing the static "prepare your host" panel. Three new UI tests failed first, then passed.
+- `623f018`: implemented `AgentClient::inspect_host()` (the former `todo!()`). The three Linux transport tests were first observed failing on the stub, then passing. The 30-second freshness rule moved to `HostAdmission::is_fresh` and is shared with provisioning.
+- `3e8961d`: host-backed HTTP routes listed above, `GM_AGENT_SOCKET`/`GM_AGENT_UID` configuration in `manager-api`. New Linux test `crates/api/tests/http_provisioning.rs` (fake agent on a real Unix socket) failed first, then passed: unconfigured agent, capacity overview, admin-only allocation add/duplicate, capacity rejection, successful creation and owner access, allocation reuse rejection, agent blockers.
+- `18e57ee`: creation page replacing the static "prepare your host" panel. Three new UI tests failed first, then passed.
 - Verified on the final tree in that container: `cargo test --workspace` **45 passed, 0 failed, 1 ignored** (the explicit real-host probe); `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` clean; `npm --prefix web test -- --run` **5 passed**; `npm --prefix web run check` 0 errors/0 warnings; `npm --prefix web run build` succeeded.
 - Headless Chromium (Playwright) rendered the built creation page at 1280px and 390px against **mocked** API responses: no horizontal overflow, blockers/capacity/form/admin form legible. This is a layout check only, not a signed-in roundtrip with the real API/agent.
 - Not done in that session: no access to the Debian host, so the real agent binary was not run against the new client, and no Linux host or Windows run was repeated. Docker was not available in the container.
@@ -351,7 +351,7 @@ After the user clarified continuous work, implementation continued beyond the fi
 
 ### Former stopping point (resolved by the cloud continuation above)
 
-- Last fully verified whole-workspace checkpoint: **244e969**, atomic admission/allocation milestone, 30 passing Windows Rust tests plus formatting/Clippy.
+- Last fully verified whole-workspace checkpoint: **683e2c0**, atomic admission/allocation milestone, 30 passing Windows Rust tests plus formatting/Clippy.
 - Later focused checks passed: 3 command-bound tests, 3 Docker inventory tests, 2 hardware/interface parser tests, 1 reply-decoder test, existing 3 RPC tests, and 1 native read-only Linux host qualification.
 - The newer complete source tree has **not** had a final full Windows/Linux/Clippy run. Do not combine focused counts into a claimed full-suite pass.
 - **Known stub:** `AgentClient::inspect_host()` in `crates/api/src/agent_client.rs` still contains `todo!()`. It is not connected to HTTP routes. Finish it before enabling host-backed creation or running its new Linux transport tests.
@@ -396,7 +396,7 @@ Run in the Ubuntu 24.04 test container (Rust 1.99.0, Node 22, Docker 29.9):
 
 ### Previously verified Linux snapshot
 
-At the agent-foundation snapshot (commit `c25fc91` content), **25 Rust tests passed** on Debian in a disposable resource-capped build container. This snapshot predates the newest server metadata/UI work. Do not claim that the newest full tree has passed Linux tests until it is rerun.
+At the agent-foundation snapshot (commit `b3bd8ef` content), **25 Rust tests passed** on Debian in a disposable resource-capped build container. This snapshot predates the newest server metadata/UI work. Do not claim that the newest full tree has passed Linux tests until it is rerun.
 
 Linux build container: official Rust image, one CPU, 1 GiB RAM/no extra swap, 256 PIDs, UID/GID 1000, capabilities dropped, no-new-privileges, no published ports/Docker socket/legacy data. Read-only project bind; bounded tmpfs cache/build. Temporary container removed on exit.
 
@@ -416,7 +416,7 @@ npm --prefix web run check
 npm --prefix web run build
 ```
 
-Earlier UI/server-metadata checkpoint verification on 2026-10-27 (`3d0eadd`; historical evidence, not a final test of the paused WIP):
+Earlier UI/server-metadata checkpoint verification on 2026-10-27 (`a17adb4`; historical evidence, not a final test of the paused WIP):
 
 | Check | Result |
 | --- | --- |
@@ -490,18 +490,18 @@ The development proxy targets API port 19090. No API process/private HTTPS proxy
 
 ## Commit checkpoints
 
-- `3625d81`: approved design and host findings.
-- `298ea46`: job leases/recovery and core policies.
-- `a13153f`: invite-only authentication and private-origin API.
-- `957b89b`: strict shared egg imports, immutable revisions, pinned fixtures.
-- `c25fc91`: Linux peer-authenticated agent health protocol and Linux validation evidence.
-- `3d0eadd`: server metadata/access APIs, initial Codex-style UI, and root-level handoff documents.
-- `244e969`: shared versioned database initialization and atomic resource/allocation/server/install-job creation.
-- `f03c916`: WIP host inspection (bounded commands, Docker inventory, hardware/interface parsing) with the client stub.
-- `8b0cd49`: agent client transport. `0760c84`: host-backed HTTP creation/allocations/overview. `9e8e98b`: creation page.
-- `d2415bc`: Fabric egg support. `99927fd`: agent game runner and quota storage. `8261147`: stdin/lock/egress fixes. `fcf4bed`: API runtime and Modrinth. `3081be7`: workspace and static serving. `2465aab`: browser acceptance. Later: socket group grant, SIGTERM handling, deployment templates.
+- `a541528`: approved design and host findings.
+- `3291f5c`: job leases/recovery and core policies.
+- `fb7fc52`: invite-only authentication and private-origin API.
+- `05831f3`: strict shared egg imports, immutable revisions, pinned fixtures.
+- `b3bd8ef`: Linux peer-authenticated agent health protocol and Linux validation evidence.
+- `a17adb4`: server metadata/access APIs, initial Codex-style UI, and root-level handoff documents.
+- `683e2c0`: shared versioned database initialization and atomic resource/allocation/server/install-job creation.
+- `9e9d61b`: WIP host inspection (bounded commands, Docker inventory, hardware/interface parsing) with the client stub.
+- `623f018`: agent client transport. `3e8961d`: host-backed HTTP creation/allocations/overview. `18e57ee`: creation page.
+- `b6e541e`: Fabric egg support. `755fa27`: agent game runner and quota storage. `5a6c586`: stdin/lock/egress fixes. `dc0f6b1`: API runtime and Modrinth. `f6168a9`: workspace and static serving. `9930b97`: browser acceptance. Later: socket group grant, SIGTERM handling, deployment templates.
 
-- `46f2521`: settings, limits, usage metrics, members. `426b10b`: explained crash causes, Vanilla/Forge/NeoForge fixtures. `1b6d0c6`: editions, schedules, updates. `efc8a5d`: experimental servers, network isolation, imports, update hardening.
+- `59f3e0d`: settings, limits, usage metrics, members. `c424d58`: explained crash causes, Vanilla/Forge/NeoForge fixtures. `a7dc250`: editions, schedules, updates. `9049b99`: experimental servers, network isolation, imports, update hardening.
 
 Use `git log` and `git status` for the final current commit; documentation-only follow-ups may be newer than the implementation checkpoints above.
 
