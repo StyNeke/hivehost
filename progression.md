@@ -88,6 +88,16 @@ NOPASSWD sudo drop-in the user created (`/etc/sudoers.d/90-claude-temp`; remove 
 12. **Outbound from the API user:** `api.github.com` (Pumpkin, SteelMC repos) and Modrinth answer
     200; anonymous GitHub limit 60/h for this IP, enough for the hourly cache.
 
+13. **One-line installer** (`install.sh`, user request): asks for the private IP (Meshnet
+    address detected by default), HTTPS port, optional certificate DNS name and the
+    administrator (password via `init-admin`'s hidden prompt), builds in throwaway `rust:1.99-slim`
+    and `node:22-slim` containers, installs, creates the name-constrained CA, enables the three
+    units. Reruns keep `/etc/hivehost` and only rebuild/restart. Tested on the Debian host from a
+    checkout (update path, administrator skipped): exit 0, services active. The `curl | bash`
+    form needs the repository to be public (it was private: anonymous downloads returned 404).
+    The first-install path (questions, CA, env files) is the same sequence as the manual
+    deployment but has not been run end to end on a clean host.
+
 **Next (waiting on the user):**
 - Create the administrator: `init-admin` reads the password from a hidden prompt, and Claude may
   not choose or type account passwords.

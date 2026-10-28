@@ -2,6 +2,19 @@
 
 Work in progress: a new Rust-based manager for one private Linux host. Start with [progression.md](progression.md), then the [approved design](design.md) and [implementation plan](implementation-plan.md). All three handoff documents live together in this root folder.
 
+## Install (Debian with Docker)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/StyNeke/hivehost/main/install.sh | sudo bash
+```
+
+The first run asks for the private IP to serve on (a Meshnet/Tailscale address by default), the
+HTTPS port, an optional DNS name for the certificate, and the administrator's name and password
+(hidden prompt). It builds HiveHost in throwaway Docker containers, creates a private CA, and
+starts `hivehost-agent`, `hivehost-api` and `hivehost-proxy`. Trust `/etc/hivehost/tls/ca.crt` on
+your devices. Run it again to update; your configuration is kept. Details:
+[deployment runbook](docs/operations/deployment.md).
+
 Implemented:
 - Invite-only accounts, owner/member access with a members tab.
 - A shared egg library with administrator runtime qualification.

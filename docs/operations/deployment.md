@@ -15,6 +15,14 @@ safe budget on the target host, and nothing here lowers them.
 The agent only acts on containers, volumes and UIDs recorded in its own registry. The API never
 receives Docker access, host paths or container IDs from browsers.
 
+## Quick install
+
+`install.sh` performs steps 1–5 below: `curl -fsSL https://raw.githubusercontent.com/StyNeke/hivehost/main/install.sh | sudo bash`
+(or `sudo ./install.sh` from a checkout). It asks for the address, port, certificate name and
+administrator on the first run, and only rebuilds and restarts on later runs (restarting the
+agent stops and restores running game servers). Verified on the Debian host on 2026-10-28 (update
+path). The manual steps follow.
+
 ## 1. Build
 
 On a build machine with the pinned toolchain and Node:
