@@ -30,6 +30,8 @@ pub struct EggSummary {
     pub name: String,
     pub revision: EggRevisionId,
     pub runtime_qualified: bool,
+    // From the experimental panel; shown with an experimental label everywhere.
+    pub experimental: bool,
 }
 
 pub struct StoredRevision {
@@ -66,6 +68,7 @@ impl EggStore {
             name: normalized.name,
             revision,
             runtime_qualified: false,
+            experimental: false,
         })
     }
 
@@ -93,19 +96,26 @@ impl EggStore {
             "INSERT INTO egg_revisions (id, egg_id, name, raw, normalized, sha256, creator_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![revision.0.to_string(), egg.to_string(), normalized.name, raw, encoded, format!("{:x}", Sha256::digest(raw)), actor.0.to_string()],
         )?;
+        let experimental: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM experimental_eggs WHERE egg_id = ?1)",
+            [egg.to_string()],
+            |row| row.get(0),
+        )?;
         transaction.commit()?;
         Ok(EggSummary {
             id: egg,
             name: normalized.name,
             revision,
             runtime_qualified: false,
+            experimental,
         })
     }
 
     pub fn list(&self) -> Result<Vec<EggSummary>, LibraryError> {
         let mut statement = self.0.prepare(
             "SELECT egg_id, name, id,
-                    EXISTS(SELECT 1 FROM egg_qualifications q WHERE q.revision_id = r.id)
+                    EXISTS(SELECT 1 FROM egg_qualifications q WHERE q.revision_id = r.id),
+                    EXISTS(SELECT 1 FROM experimental_eggs x WHERE x.egg_id = r.egg_id)
              FROM egg_revisions r WHERE sequence =
              (SELECT max(sequence) FROM egg_revisions WHERE egg_id = r.egg_id) ORDER BY name, egg_id",
         )?;
@@ -115,10 +125,11 @@ impl EggStore {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, bool>(3)?,
+                row.get::<_, bool>(4)?,
             ))
         })?;
         rows.map(|row| {
-            let (id, name, revision, runtime_qualified) = row?;
+            let (id, name, revision, runtime_qualified, experimental) = row?;
             Ok(EggSummary {
                 id: Uuid::parse_str(&id).map_err(|_| LibraryError::InvalidRevision)?,
                 name,
@@ -126,6 +137,7 @@ impl EggStore {
                     Uuid::parse_str(&revision).map_err(|_| LibraryError::InvalidRevision)?,
                 ),
                 runtime_qualified,
+                experimental,
             })
         })
         .collect()

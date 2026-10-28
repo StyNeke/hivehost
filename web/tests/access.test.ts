@@ -33,6 +33,7 @@ test('shared library import errors show actionable compatibility details', async
     if (path === '/api/session') return Response.json({ id: 'admin', is_admin: true });
     if (path === '/api/servers') return Response.json([]);
     if (path === '/api/eggs') return Response.json([]);
+    if (path === '/api/experimental') return Response.json([]);
     throw new Error(`Unexpected request: ${path}`);
   }));
   render(App);

@@ -109,26 +109,34 @@ pub fn verify_archive(input: impl Read) -> io::Result<u64> {
     let mut entries = 0u64;
     for entry in archive.entries()? {
         let mut entry = entry?;
+        safe_relative(&entry.path()?)?;
         io::copy(&mut entry, &mut io::sink())?;
         entries += 1;
     }
     Ok(entries)
 }
 
-fn safe_relative(path: &Path) -> io::Result<String> {
-    let text = path
-        .to_str()
-        .ok_or_else(|| invalid("archive path is not UTF-8"))?;
-    let trimmed = text.trim_end_matches('/');
-    if trimmed.is_empty()
-        || path.components().count() > MAX_DEPTH
-        || path
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-    {
+// The entry's path inside the server directory, or None for the archive root itself. A leading
+// "./" (as `tar -C dir .` writes) is accepted; anything that could leave the directory is not.
+fn safe_relative(path: &Path) -> io::Result<Option<String>> {
+    let mut components = path.components().peekable();
+    if components.peek() == Some(&Component::CurDir) {
+        components.next();
+    }
+    let parts: Vec<Component> = components.collect();
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    if parts.len() > MAX_DEPTH || parts.iter().any(|c| !matches!(c, Component::Normal(_))) {
         return Err(invalid("archive entry escapes the server directory"));
     }
-    Ok(trimmed.to_owned())
+    let relative: std::path::PathBuf = parts.iter().collect();
+    Ok(Some(
+        relative
+            .to_str()
+            .ok_or_else(|| invalid("archive path is not UTF-8"))?
+            .to_owned(),
+    ))
 }
 
 // Extracts into `staging` (which must not exist yet). Every entry is validated; nothing is
@@ -140,7 +148,9 @@ pub fn extract_archive(input: impl Read, staging: &Path) -> io::Result<u64> {
     let mut entries = 0u64;
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let relative = safe_relative(&entry.path()?)?;
+        let Some(relative) = safe_relative(&entry.path()?)? else {
+            continue;
+        };
         if relative
             .split('/')
             .next()

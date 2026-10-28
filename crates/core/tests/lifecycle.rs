@@ -58,6 +58,11 @@ fn known_exit_causes_are_explained_and_deterministic_ones_are_not_retried() {
     ))
     .unwrap();
     assert!(!memory.permanent);
+    assert!(
+        explain_exit(&lines("Error: Unable to access jarfile server.jar"))
+            .unwrap()
+            .permanent
+    );
     assert_eq!(explain_exit(&lines("[Server] Stopping server\nexit")), None);
     assert_eq!(explain_exit(&[]), None);
 }

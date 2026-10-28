@@ -414,18 +414,125 @@ impl Runtime {
         Ok("Backup restored; the previous data was saved as a pre-restore backup".into())
     }
 
+    // Receives an uploaded archive in order. Imports never use the reserved disk space and are
+    // verified (readable, every path inside the server directory) before they are listed.
+    pub async fn import_chunk(
+        &self,
+        id: Uuid,
+        upload: Uuid,
+        offset: u64,
+        data: Vec<u8>,
+        last: bool,
+    ) -> AgentResult {
+        if !self.records.lock().await.contains_key(&id) {
+            return rejected("not_found", "server not found");
+        }
+        match self.write_import(id, upload, offset, &data, last).await {
+            Ok(Some(info)) => AgentResult::Backups(vec![info]),
+            Ok(None) => AgentResult::Accepted,
+            Err(error) => {
+                let _ = std::fs::remove_file(
+                    self.backup_dir(id).join(format!("{upload}.tar.gz.partial")),
+                );
+                let code = if error.kind() == io::ErrorKind::InvalidData {
+                    "invalid"
+                } else {
+                    "import"
+                };
+                rejected(code, error.to_string())
+            }
+        }
+    }
+
+    async fn write_import(
+        &self,
+        id: Uuid,
+        upload: Uuid,
+        offset: u64,
+        data: &[u8],
+        last: bool,
+    ) -> io::Result<Option<BackupInfo>> {
+        use std::io::Write;
+        const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024 * 1024;
+        let directory = self.prepare_backup_dir(id)?;
+        let partial = directory.join(format!("{upload}.tar.gz.partial"));
+        let mut file = if offset == 0 {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o640)
+                .open(&partial)?
+        } else {
+            std::fs::OpenOptions::new().append(true).open(&partial)?
+        };
+        if file.metadata()?.len() != offset {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "upload chunks arrived out of order",
+            ));
+        }
+        if offset + data.len() as u64 > MAX_IMPORT_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the archive is too large",
+            ));
+        }
+        if fd_available(&file)?.saturating_sub(data.len() as u64) < self.config.disk_reserve_bytes {
+            return Err(io::Error::other(
+                "not enough free disk space for the archive without using the reserved space",
+            ));
+        }
+        file.write_all(data)?;
+        if !last {
+            return Ok(None);
+        }
+        file.sync_all()?;
+        drop(file);
+        if let Some(gid) = self.config.api_gid {
+            std::os::unix::fs::chown(&partial, Some(0), Some(gid))?;
+        }
+        let check = partial.clone();
+        let sha256 = tokio::task::spawn_blocking(move || -> io::Result<String> {
+            backups::verify_archive(std::io::BufReader::new(std::fs::File::open(&check)?))
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("not a usable .tar.gz archive of server files: {error}"),
+                    )
+                })?;
+            sha256_file(&check)
+        })
+        .await
+        .map_err(|_| io::Error::other("verification task failed"))??;
+        let info = BackupInfo {
+            id: upload,
+            kind: BackupKind::Imported,
+            created_at: now(),
+            size_bytes: std::fs::metadata(&partial)?.len(),
+            sha256,
+        };
+        let meta = directory.join(format!("{upload}.json"));
+        std::fs::write(&meta, serde_json::to_vec(&info).map_err(io::Error::other)?)?;
+        std::fs::set_permissions(&meta, std::fs::Permissions::from_mode(0o640))?;
+        if let Some(gid) = self.config.api_gid {
+            std::os::unix::fs::chown(&meta, Some(0), Some(gid))?;
+        }
+        std::fs::rename(&partial, directory.join(format!("{upload}.tar.gz")))?;
+        Ok(Some(info))
+    }
+
     // Replaces the server's files with an archive's contents through a staging directory.
     pub(super) async fn restore_files(
         &self,
         id: Uuid,
         archive: &std::path::Path,
     ) -> io::Result<()> {
-        let uid = self
+        let (uid, spec) = self
             .records
             .lock()
             .await
             .get(&id)
-            .map(|r| r.uid)
+            .map(|r| (r.uid, r.spec.clone()))
             .ok_or_else(|| io::Error::other("server vanished"))?;
         storage::ensure_mounted(&self.layout, id).await?;
         let volume = self.layout.volume(id);
@@ -447,7 +554,11 @@ impl Runtime {
             })
         })
         .await
-        .map_err(|_| io::Error::other("restore task failed"))?
+        .map_err(|_| io::Error::other("restore task failed"))??;
+        // The restored files may hold another game version than the record says.
+        let game = self.detect_installed(id, &spec, uid).await?;
+        self.update(id, |record| record.game = game).await?;
+        Ok(())
     }
 
     pub(super) fn backup_path(&self, id: Uuid, backup: Uuid) -> PathBuf {

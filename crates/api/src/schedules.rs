@@ -8,7 +8,10 @@ use crate::{
     runtime::{RuntimeError, RuntimeStore},
 };
 use manager_core::{model::ServerId, schedule::Recurrence};
-use manager_protocol::{AgentResult, MAX_COMMAND_BYTES, Operation, PowerState};
+use manager_protocol::{
+    AgentResult, MAX_COMMAND_BYTES, Operation, OperationKind, OperationState, PowerState,
+    RuntimeStatus,
+};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -347,6 +350,14 @@ impl ScheduleStore {
         Ok(())
     }
 
+    pub fn pause(&mut self, id: Uuid) -> Result<(), ScheduleError> {
+        self.0.execute(
+            "UPDATE schedules SET enabled = 0 WHERE id = ?1",
+            [id.to_string()],
+        )?;
+        Ok(())
+    }
+
     pub fn server_of(&self, id: Uuid) -> Result<Option<ServerId>, ScheduleError> {
         Ok(self
             .0
@@ -399,7 +410,11 @@ pub async fn tick(database: &Path, agent: &AgentClient, now: i64) -> Result<(), 
             };
             let _ = tokio::task::spawn_blocking(move || -> Result<(), ScheduleError> {
                 let at = current_time();
-                ScheduleStore::open(&database)?.finish(run.id, &detail, at)?;
+                let mut store = ScheduleStore::open(&database)?;
+                store.finish(run.id, &detail, at)?;
+                if detail.starts_with(PAUSED) {
+                    store.pause(run.id)?;
+                }
                 RuntimeStore::open(&database)
                     .and_then(|mut store| {
                         store.record(None, run.server, action, result, Some(&detail), at)
@@ -412,14 +427,14 @@ pub async fn tick(database: &Path, agent: &AgentClient, now: i64) -> Result<(), 
     Ok(())
 }
 
-async fn status(agent: &AgentClient, server: ServerId) -> Result<(PowerState, bool), String> {
+async fn runtime_status(agent: &AgentClient, server: ServerId) -> Result<RuntimeStatus, String> {
     match agent
         .call(Operation::ServerStatus {
             server_id: server.0,
         })
         .await
     {
-        Ok(AgentResult::ServerStatus(status)) => Ok((status.power, status.desired_running)),
+        Ok(AgentResult::ServerStatus(status)) => Ok(*status),
         Ok(AgentResult::Rejected(rejection)) => Err(rejection.message),
         _ => Err("the host agent is not available".into()),
     }
@@ -433,6 +448,15 @@ fn accepted(result: Result<AgentResult, impl std::fmt::Display>) -> Result<(), S
         Err(error) => Err(format!("the host agent is not available ({error})")),
     }
 }
+
+async fn status(agent: &AgentClient, server: ServerId) -> Result<(PowerState, bool), String> {
+    runtime_status(agent, server)
+        .await
+        .map(|status| (status.power, status.desired_running))
+}
+
+// Outcomes starting with this pause the schedule until someone enables it again.
+const PAUSED: &str = "paused: ";
 
 async fn execute(database: &Path, agent: &AgentClient, run: &Due) -> Result<String, String> {
     let path = database.to_path_buf();
@@ -480,6 +504,16 @@ async fn execute(database: &Path, agent: &AgentClient, run: &Due) -> Result<Stri
             Ok("backup started".into())
         }
         Action::Update => {
+            // A failed update is not retried automatically; people look at it first.
+            let last = runtime_status(agent, server).await?.operation;
+            if let Some(operation) = last
+                .filter(|o| o.kind == OperationKind::Update && o.state == OperationState::Failed)
+            {
+                return Err(format!(
+                    "{PAUSED}the last update failed ({}); review the server, then enable this schedule again",
+                    operation.message.lines().next().unwrap_or_default()
+                ));
+            }
             accepted(
                 agent
                     .call(Operation::UpdateServer {

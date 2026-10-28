@@ -20,6 +20,8 @@ pub struct AgentConfig {
     // Backups live outside server volumes; the API's group may read them to stream downloads.
     pub backup_root: PathBuf,
     pub api_gid: Option<u32>,
+    // Firewall rules keeping containers away from the host and private networks.
+    pub network_isolation: bool,
 }
 
 impl Default for AgentConfig {
@@ -38,6 +40,7 @@ impl Default for AgentConfig {
             docker_socket: "/var/run/docker.sock".into(),
             backup_root: "/var/lib/game-manager-backups".into(),
             api_gid: None,
+            network_isolation: true,
         }
     }
 }

@@ -172,3 +172,36 @@ fn pinned_vanilla_forge_and_neoforge_eggs_normalize() {
         }
     }
 }
+
+#[test]
+fn experimental_eggs_normalize_with_line_replacements() {
+    for (bytes, name, file, done) in [
+        (
+            &include_bytes!("../../../eggs/experimental/pumpkin.json")[..],
+            "Pumpkin",
+            "pumpkin.toml",
+            "Server is now running.",
+        ),
+        (
+            &include_bytes!("../../../eggs/experimental/steelmc.json")[..],
+            "SteelMC (experimental)",
+            "config/config.toml",
+            "Started Steel Server",
+        ),
+    ] {
+        let egg = normalize_egg(bytes).unwrap_or_else(|issues| panic!("{name}: {issues:?}"));
+        assert_eq!(egg.name, name);
+        assert_eq!(egg.files[file].parser, "file");
+        assert_eq!(egg.ready_when, done);
+        for variable in &egg.variables {
+            validate_variable(variable, &variable.default_value)
+                .unwrap_or_else(|e| panic!("{name} {}: {e}", variable.env_variable));
+        }
+    }
+    // Line replacements still reject multi-line values.
+    let mut raw: Value =
+        serde_json::from_slice(include_bytes!("../../../eggs/experimental/steelmc.json")).unwrap();
+    raw["config"]["files"] =
+        json!(r#"{"config/config.toml":{"parser":"file","find":{"server_port = ":"x\ny"}}}"#);
+    assert!(normalize_egg(&serde_json::to_vec(&raw).unwrap()).is_err());
+}

@@ -28,7 +28,7 @@
   type Member = { user_id: string; username: string; enabled: boolean };
   type Person = { id: string; username: string };
   type Schedule = { id?: string; action: 'restart' | 'backup' | 'command' | 'update'; command: string | null; hour: number; minute: number; weekdays: number; timezone: string; enabled: boolean; next_run_at?: number; last_run_at?: number | null; last_outcome?: string | null };
-  type Backup = { id: string; kind: 'manual' | 'pre_restore' | 'pre_update'; created_at: number; size_bytes: number };
+  type Backup = { id: string; kind: 'manual' | 'pre_restore' | 'pre_update' | 'imported'; created_at: number; size_bytes: number };
 
   let { serverId, onBack, onDeleted }: { serverId: string; onBack: () => void; onDeleted: (name: string) => void } = $props();
 
@@ -188,6 +188,20 @@
     if (!confirm(`Replace the server's current files with the backup from ${when(backup.created_at)}? The current files are saved as a pre-restore backup first.`)) return;
     await api(`/api/servers/${serverId}/backups/${backup.id}/restore`, { method: 'POST', body: JSON.stringify({ confirm: true }) });
     notice = 'Restoring the backup.';
+  });
+  let importInput = $state<HTMLInputElement | undefined>();
+  const importArchive = (list: FileList | null) => act(async () => {
+    const file = list?.[0];
+    if (!file) return;
+    notice = `Uploading ${file.name}…`;
+    const response = await fetch(`/api/servers/${serverId}/import`, { method: 'POST', body: file, credentials: 'same-origin' });
+    if (importInput) importInput.value = '';
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new ApiError(response.status, body?.message ?? `Import of ${file.name} failed`);
+    }
+    notice = `${file.name} was checked and added to the list below. Restore it to replace the server's files; nothing changed yet.`;
+    await loadBackups();
   });
   const deleteBackup = (backup: Backup) => act(async () => {
     if (!confirm(`Delete the backup from ${when(backup.created_at)}? This cannot be undone.`)) return;
@@ -476,7 +490,7 @@
         {#if !backups.length}<p class="muted">No backups yet.</p>{/if}
         <ul class="mod-list">
           {#each backups as backup (backup.id)}
-            <li><div><strong>{when(backup.created_at)}</strong><small>{size(backup.size_bytes)}{backup.kind === 'pre_restore' ? ' · saved automatically before a restore' : backup.kind === 'pre_update' ? ' · saved automatically before an update' : ''}</small></div>
+            <li><div><strong>{when(backup.created_at)}</strong><small>{size(backup.size_bytes)}{backup.kind === 'pre_restore' ? ' · saved automatically before a restore' : backup.kind === 'pre_update' ? ' · saved automatically before an update' : backup.kind === 'imported' ? ' · imported archive' : ''}</small></div>
               <div class="row-actions">
                 <a class="secondary" href={`/api/servers/${serverId}/backups/${backup.id}/download`} download>Download</a>
                 <button class="secondary" aria-label={`Restore backup from ${when(backup.created_at)}`} disabled={busy || !stopped || !!operation} onclick={() => restoreBackup(backup)}>Restore</button>
@@ -485,6 +499,11 @@
           {/each}
         </ul>
         {#if !stopped && backups.length}<p class="muted">Stop the server to restore a backup.</p>{/if}
+        <div class="import-row">
+          <h3>Import server files</h3>
+          <p class="muted">Bring a server from another panel: upload a .tar.gz of its folder (for example <code>tar czf server.tar.gz -C /path/to/server .</code>, made from a copy while that server is stopped). It is checked and listed as a backup; restoring it replaces this server's files and saves the current ones first.</p>
+          <label class="secondary upload-button">Upload archive<input bind:this={importInput} type="file" accept=".tar.gz,.tgz,application/gzip" disabled={busy || !!operation} onchange={(event) => importArchive(event.currentTarget.files)} /></label>
+        </div>
       </section>
     {:else if tab === 'schedules'}
       <section class="panel schedules-panel" aria-label="Schedules">

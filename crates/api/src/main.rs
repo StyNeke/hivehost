@@ -50,6 +50,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !modrinth.starts_with("https://") {
         return Err("GM_MODRINTH_API must be an https:// URL".into());
     }
+    let github =
+        env::var("GM_GITHUB_API").unwrap_or_else(|_| manager_api::experimental::GITHUB_API.into());
+    if !github.starts_with("https://") {
+        return Err("GM_GITHUB_API must be an https:// URL".into());
+    }
     // Installs and deletions are durable jobs; the worker resumes them after a restart.
     if let Some(agent) = agent.clone() {
         tokio::spawn(manager_api::schedules::run(database.clone(), agent.clone()));
@@ -58,7 +63,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backup_root = PathBuf::from(
         env::var("GM_BACKUP_ROOT").unwrap_or_else(|_| manager_api::http::BACKUP_ROOT.into()),
     );
-    let mut app = router_with_services(database, origin.clone(), agent, &modrinth, &backup_root);
+    let mut app = router_with_services(
+        database,
+        origin.clone(),
+        agent,
+        &modrinth,
+        &github,
+        &backup_root,
+    );
     if let Ok(directory) = env::var("GM_STATIC_DIR") {
         let directory = PathBuf::from(directory);
         if !directory.join("index.html").is_file() {

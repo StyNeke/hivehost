@@ -118,6 +118,23 @@ async fn runtime_operation(
             spec,
             keep_game_version,
         } => runtime.update_server(*spec, keep_game_version).await,
+        Operation::ImportChunk {
+            server_id,
+            upload_id,
+            offset,
+            data,
+            last,
+        } => {
+            use base64::Engine;
+            match base64::engine::general_purpose::STANDARD.decode(data) {
+                Ok(bytes) if bytes.len() <= 4 * 1024 * 1024 => {
+                    runtime
+                        .import_chunk(server_id, upload_id, offset, bytes, last)
+                        .await
+                }
+                _ => crate::runtime::invalid_chunk(),
+            }
+        }
         Operation::Ping | Operation::InspectHost => AgentResult::Unavailable,
     }
 }

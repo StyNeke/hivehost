@@ -165,6 +165,16 @@ pub enum Operation {
         spec: Box<ServerSpec>,
         keep_game_version: bool,
     },
+    // Appends to an uploaded gzip tar archive; the last chunk verifies it and records it as an
+    // imported backup, which is then restored like any other backup.
+    ImportChunk {
+        server_id: Uuid,
+        upload_id: Uuid,
+        offset: u64,
+        // Base64-encoded bytes.
+        data: String,
+        last: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +202,8 @@ pub enum BackupKind {
     PreRestore,
     // Made automatically before an update; an update that fails is rolled back from it.
     PreUpdate,
+    // Uploaded from elsewhere (for example a copied Pterodactyl server) to be restored.
+    Imported,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

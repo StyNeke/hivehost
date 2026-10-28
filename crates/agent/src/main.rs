@@ -66,6 +66,11 @@ fn config_from_env() -> Result<manager_agent::host::AgentConfig, Box<dyn std::er
     if let Ok(subnet) = env::var("GM_NETWORK_SUBNET") {
         config.network_subnet = subnet;
     }
+    match env::var("GM_NETWORK_ISOLATION").as_deref() {
+        Err(_) | Ok("on") => {}
+        Ok("off") => config.network_isolation = false,
+        Ok(_) => return Err("GM_NETWORK_ISOLATION must be on or off".into()),
+    }
     Ok(config)
 }
 
@@ -108,6 +113,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.api_gid = Some(manager_agent::linux::primary_gid(api_uid)?);
     let runtime = Arc::new(Runtime::new(config));
     runtime.load().await?;
+    runtime.ensure_network().await.map_err(|error| {
+        format!(
+            "could not prepare the game network and its isolation rules: {error} (GM_NETWORK_ISOLATION=off runs without the rules)"
+        )
+    })?;
     let listener = bind_private(&path)?;
     manager_agent::linux::grant_group(&path, api_uid)?;
     let original = std::fs::symlink_metadata(&path)?;

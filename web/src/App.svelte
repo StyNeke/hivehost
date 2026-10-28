@@ -2,12 +2,13 @@
   import { onMount } from 'svelte';
   import { api, ApiError } from './api';
   import Icon from './components/Icon.svelte';
+  import Experimental from './components/Experimental.svelte';
   import CreateServer from './pages/CreateServer.svelte';
   import ServerWorkspace from './pages/ServerWorkspace.svelte';
 
   type Session = { id: string; is_admin: boolean };
   type Server = { id: string; name: string; can_access: boolean; usage: null | { cpu_percent: number | null; memory_bytes: number | null; disk_bytes: number | null } };
-  type Egg = { id: string; name: string; revision: string; runtime_qualified: boolean };
+  type Egg = { id: string; name: string; revision: string; runtime_qualified: boolean; experimental?: boolean };
   type EggDetails = { name: string; description: string; author: string; images: [string, string][]; variables: { name: string; env_variable: string }[] };
   let session = $state<Session | null>(null);
   let checking = $state(true);
@@ -172,7 +173,8 @@
         <section class="page-content">
           <div class="page-heading"><div><div class="eyebrow">Shared with your team</div><h1>Egg library</h1><p>Bring your games with you. Import a game definition to get started.</p></div><span class="count-badge">{eggs.length} {eggs.length === 1 ? 'egg' : 'eggs'}</span></div>
           <form class="panel import-panel" onsubmit={importEgg}><div><h2>Import an egg</h2><p>Choose a Pterodactyl egg JSON file. Imported definitions are shared with everyone on your team.</p><label class="file-picker" for="egg-file">Egg JSON file</label><input id="egg-file" type="file" accept=".json,application/json" onchange={(event) => { selectedFile = event.currentTarget.files?.[0]; }} /></div><button class="primary" disabled={!selectedFile || busy}>{busy ? 'Importing…' : 'Import egg'}</button></form>
-          {#if !eggs.length}<div class="empty-state compact"><div class="empty-icon"><Icon name="library" size={25} /></div><h2>Your shared collection starts here</h2><p>Import your first egg using the form above.</p></div>{:else}<div class="egg-grid">{#each eggs as egg (egg.id)}<button class="egg-card" onclick={() => openEgg(egg)}><span class="egg-card-icon"><Icon name="library" size={20} /></span><h2>{egg.name}</h2><p class="muted">Shared game definition</p><span class="tag">{egg.runtime_qualified ? 'Ready to install' : 'Needs runtime testing'}</span></button>{/each}</div>{/if}
+          {#if !eggs.length}<div class="empty-state compact"><div class="empty-icon"><Icon name="library" size={25} /></div><h2>Your shared collection starts here</h2><p>Import your first egg using the form above.</p></div>{:else}<div class="egg-grid">{#each eggs as egg (egg.id)}<button class="egg-card" onclick={() => openEgg(egg)}><span class="egg-card-icon"><Icon name="library" size={20} /></span><h2>{egg.name}</h2><p class="muted">Shared game definition</p><span class="tag">{egg.runtime_qualified ? 'Ready to install' : 'Needs runtime testing'}</span>{#if egg.experimental}<span class="tag warning-tag">Experimental</span>{/if}</button>{/each}</div>{/if}
+          <Experimental onAdded={async () => { eggs = await api<Egg[]>('/api/eggs'); notice = 'Experimental egg added. Test-install it before teammates can use it.'; }} />
           {#if selectedEgg}<section class="panel egg-details"><div class="detail-heading"><h2>{selectedEgg.name}</h2><button class="icon-button" aria-label="Close egg details" onclick={() => { selectedEgg = null; }}><Icon name="close" /></button></div><p>{selectedEgg.description}</p><dl><dt>Author</dt><dd>{selectedEgg.author}</dd><dt>Available environments</dt><dd>{selectedEgg.images.map(([name]) => name).join(', ')}</dd><dt>Settings</dt><dd>{selectedEgg.variables.map(variable => variable.name).join(', ')}</dd><dt>Runtime</dt><dd>{selectedEgg.qualified ? 'Qualified by an administrator' : 'Not yet qualified. Administrators can test-install it, then mark it as qualified for everyone.'}</dd></dl>{#if session.is_admin && !selectedEgg.qualified}<button class="secondary qualify" disabled={busy} onclick={qualify}>Mark runtime qualified</button>{/if}</section>{/if}
         </section>
       {:else if page === 'team' && session.is_admin}

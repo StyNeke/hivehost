@@ -230,6 +230,24 @@ pub fn set_properties(existing: &str, values: &BTreeMap<String, String>) -> Stri
     output
 }
 
+// The egg "file" parser: a line whose start (ignoring indentation) matches a key is replaced by
+// that key's value. Other lines, and files without a match, stay as they are.
+pub fn replace_lines(existing: &str, values: &BTreeMap<String, String>) -> String {
+    let mut output = String::with_capacity(existing.len() + 64);
+    for line in existing.lines() {
+        let trimmed = line.trim_start();
+        match values
+            .iter()
+            .find(|(key, _)| trimmed.starts_with(key.as_str()))
+        {
+            Some((_, value)) => output.push_str(value),
+            None => output.push_str(line),
+        }
+        output.push('\n');
+    }
+    output
+}
+
 fn jar_version(root: &Path, relative: &str) -> io::Result<Option<String>> {
     let path = resolve(root, relative)?;
     let file = match open_no_follow(&path) {

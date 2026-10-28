@@ -220,18 +220,24 @@ pub fn normalize_egg(raw: &[u8]) -> Result<EggRevision, Vec<CompatibilityIssue>>
                 "file path must stay within the server root",
             ));
         }
-        if transform.parser != "properties" {
-            return Err(issue(
-                "config.files",
-                format!("unsupported parser: {}", transform.parser),
-            ));
-        }
+        // "properties" sets key=value pairs; "file" replaces whole lines that start with a match.
+        let line_parser = match transform.parser.as_str() {
+            "properties" => false,
+            "file" => true,
+            other => {
+                return Err(issue(
+                    "config.files",
+                    format!("unsupported parser: {other}"),
+                ));
+            }
+        };
         for (key, value) in &transform.find {
-            if key.is_empty()
-                || key.contains(['\n', '\r', '\0', '='])
+            if key.trim().is_empty()
+                || key.contains(['\n', '\r', '\0'])
+                || (!line_parser && key.contains('='))
                 || value.contains(['\n', '\r', '\0'])
             {
-                return Err(issue("config.files", "invalid properties replacement"));
+                return Err(issue("config.files", "invalid configuration replacement"));
             }
         }
     }

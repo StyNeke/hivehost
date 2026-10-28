@@ -57,6 +57,22 @@ pub fn explain_exit(lines: &[String]) -> Option<ExitCause> {
                 permanent: true,
             });
         }
+        if line.contains("Unable to access jarfile")
+            || (line.contains("bedrock_server") && line.contains("No such file or directory"))
+        {
+            return Some(ExitCause {
+                message:
+                    "The game files are missing. Run an update or reinstall, or restore a backup."
+                        .into(),
+                permanent: true,
+            });
+        }
+        if line.contains("Failed to bind the Bedrock UDP socket") {
+            return Some(ExitCause {
+                message: "Pumpkin could not open its Bedrock UDP listener here. In Files, open pumpkin.toml and set enabled = false under [networking.bedrock], then start the server.".into(),
+                permanent: true,
+            });
+        }
         if line.contains("You need to agree to the EULA") {
             return Some(ExitCause {
                 message: "The Minecraft EULA has not been accepted for this server.".into(),

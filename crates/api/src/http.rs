@@ -39,9 +39,12 @@ struct AppState {
     attempts: Arc<Mutex<VecDeque<Instant>>>,
     agent: Option<AgentClient>,
     modrinth: crate::modrinth::Modrinth,
+    github: crate::experimental::GitHub,
     backup_root: PathBuf,
 }
 
+#[path = "http_experimental_routes.rs"]
+mod experimental_routes;
 #[path = "http_server_routes.rs"]
 mod server_routes;
 
@@ -250,7 +253,14 @@ pub const MODRINTH_API: &str = "https://api.modrinth.com/v2";
 pub const BACKUP_ROOT: &str = "/var/lib/game-manager-backups";
 
 pub fn router(database: PathBuf, origin: String) -> Router {
-    router_with_services(database, origin, None, MODRINTH_API, BACKUP_ROOT.as_ref())
+    router_with_services(
+        database,
+        origin,
+        None,
+        MODRINTH_API,
+        crate::experimental::GITHUB_API,
+        BACKUP_ROOT.as_ref(),
+    )
 }
 
 pub fn router_with_agent(database: PathBuf, origin: String, agent: AgentClient) -> Router {
@@ -259,6 +269,7 @@ pub fn router_with_agent(database: PathBuf, origin: String, agent: AgentClient) 
         origin,
         Some(agent),
         MODRINTH_API,
+        crate::experimental::GITHUB_API,
         BACKUP_ROOT.as_ref(),
     )
 }
@@ -318,6 +329,7 @@ pub fn router_with_services(
     origin: String,
     agent: Option<AgentClient>,
     modrinth_api: &str,
+    github_api: &str,
     backup_root: &std::path::Path,
 ) -> Router {
     let state = AppState {
@@ -327,6 +339,7 @@ pub fn router_with_services(
         attempts: Arc::new(Mutex::new(VecDeque::new())),
         agent,
         modrinth: crate::modrinth::Modrinth::new(modrinth_api),
+        github: crate::experimental::GitHub::new(github_api),
         backup_root: backup_root.to_path_buf(),
     };
     Router::new()
@@ -383,6 +396,11 @@ pub fn router_with_services(
             get(server_routes::backups::download),
         )
         .route(
+            "/api/servers/{id}/import",
+            post(server_routes::backups::import)
+                .layer(DefaultBodyLimit::max(256 * 1024 * 1024 * 1024)),
+        )
+        .route(
             "/api/retained-backups",
             get(server_routes::backups::retained),
         )
@@ -417,6 +435,15 @@ pub fn router_with_services(
             post(server_routes::qualify_revision),
         )
         .route("/api/host", get(host_overview))
+        .route("/api/experimental", get(experimental_routes::list))
+        .route(
+            "/api/experimental/refresh",
+            post(experimental_routes::refresh),
+        )
+        .route(
+            "/api/experimental/{project}/egg",
+            post(experimental_routes::add_egg),
+        )
         .route(
             "/api/allocations",
             get(list_allocations).post(add_allocation),

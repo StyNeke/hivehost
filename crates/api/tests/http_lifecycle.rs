@@ -67,6 +67,7 @@ struct FakeAgent {
     retention: HashMap<Uuid, u8>,
     last_start: Option<manager_protocol::ServerSpec>,
     updates: Vec<(Uuid, bool)>,
+    imports: HashMap<Uuid, Vec<u8>>,
 }
 
 const BACKUP_BYTES: usize = 20 * 1024 * 1024;
@@ -410,6 +411,46 @@ impl FakeAgent {
                 }
                 _ => rejection("not_installed", "install the server first"),
             },
+            Operation::ImportChunk {
+                server_id,
+                upload_id,
+                offset,
+                data,
+                last,
+            } => {
+                use base64::Engine;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .unwrap();
+                let buffer = self.imports.entry(upload_id).or_default();
+                if buffer.len() as u64 != offset {
+                    return rejection("invalid", "upload chunks arrived out of order");
+                }
+                buffer.extend_from_slice(&bytes);
+                if !last {
+                    return AgentResult::Accepted;
+                }
+                let archive = self.imports.remove(&upload_id).unwrap();
+                // The real verifier decides, as on the host.
+                if let Err(error) = manager_agent::backups::verify_archive(&archive[..]) {
+                    return rejection(
+                        "invalid",
+                        &format!("not a usable .tar.gz archive of server files: {error}"),
+                    );
+                }
+                let info = BackupInfo {
+                    id: upload_id,
+                    kind: BackupKind::Imported,
+                    created_at: now(),
+                    size_bytes: archive.len() as u64,
+                    sha256: "0".repeat(64),
+                };
+                self.backups
+                    .entry(server_id)
+                    .or_default()
+                    .insert(0, info.clone());
+                AgentResult::Backups(vec![info])
+            }
             Operation::UsageAll => AgentResult::Usage(
                 self.servers
                     .iter()
@@ -659,6 +700,7 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
         ORIGIN.into(),
         Some(agent.clone()),
         &spawn_modrinth().await,
+        "http://127.0.0.1:9",
         &backup_root,
     );
     let slots = Arc::new(tokio::sync::Semaphore::new(2));
@@ -1808,6 +1850,106 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
     })
     .await;
 
+    // A copied legacy server (tar of its folder) becomes an imported backup, ready to restore.
+    let legacy = dir.path().join("legacy-volume");
+    std::fs::create_dir_all(legacy.join("world")).unwrap();
+    std::fs::write(legacy.join("world/level.dat"), b"legacy world").unwrap();
+    let archive = dir.path().join("legacy.tar.gz");
+    assert!(
+        std::process::Command::new("tar")
+            .arg("czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&legacy)
+            .arg(".")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let upload = |cookie: &str, bytes: Vec<u8>| {
+        Request::post(format!("{server}/import"))
+            .header("cookie", cookie)
+            .header("origin", ORIGIN)
+            .body(Body::from(bytes))
+            .unwrap()
+    };
+    let response = app
+        .clone()
+        .oneshot(upload(owner, std::fs::read(&archive).unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let imported: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+    assert_eq!(imported["kind"], "imported");
+    let listed = send(&app, "GET", &format!("{server}/backups"), owner, None)
+        .await
+        .1;
+    assert!(
+        listed["backups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["id"] == imported["id"])
+    );
+    let response = app
+        .clone()
+        .oneshot(upload(owner, vec![7u8; 3 * 1024 * 1024 + 5]))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let response = app
+        .clone()
+        .oneshot(upload(outsider, std::fs::read(&archive).unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let activity = send(&app, "GET", &format!("{server}/activity"), owner, None)
+        .await
+        .1
+        .to_string();
+    assert!(activity.contains("import_files"), "{activity}");
+
+    // After a failed update, a scheduled update pauses itself instead of retrying.
+    {
+        let mut agent = fake.lock().unwrap();
+        let server = agent
+            .servers
+            .get_mut(&Uuid::parse_str(&id).unwrap())
+            .unwrap();
+        server.operation = op(
+            OperationKind::Update,
+            OperationState::Failed,
+            "The update failed: installer exited with code 1",
+        );
+    }
+    let (_, retry) = send(&app, "POST", &schedules, owner, Some(plan("update"))).await;
+    let retry_due = retry["next_run_at"].as_i64().unwrap();
+    schedules::tick(&database, &agent, retry_due + 5)
+        .await
+        .unwrap();
+    let paused = eventually(&app, &schedules, owner, |list| {
+        list.as_array().is_some_and(|l| {
+            l.iter()
+                .any(|s| s["id"] == retry["id"] && s["enabled"] == false)
+        })
+    })
+    .await;
+    let paused = paused
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == retry["id"])
+        .unwrap();
+    assert!(
+        paused["last_outcome"]
+            .as_str()
+            .unwrap()
+            .contains("the last update failed"),
+        "{paused}"
+    );
+    assert_eq!(fake.lock().unwrap().updates.len(), 1, "no automatic retry");
+
     // Deletion needs the exact name, then frees the reservation and the allocation.
     let (code, body) = send(
         &app,
@@ -1865,12 +2007,13 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
     let retained = send(&app, "GET", "/api/retained-backups", owner, None)
         .await
         .1;
+    // Two backups plus the imported legacy archive.
     assert_eq!(
         (
             retained[0]["name"].as_str(),
             retained[0]["backups"].as_array().unwrap().len()
         ),
-        (Some("Bots"), 2)
+        (Some("Bots"), 3)
     );
     assert_eq!(
         send(&app, "GET", "/api/retained-backups", outsider, None)

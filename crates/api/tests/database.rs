@@ -21,7 +21,7 @@ fn schema_initialization_preserves_existing_accounts_and_rejects_future_versions
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        8
+        9
     );
     assert!(auth.login("admin", "a long test password", 100).is_ok());
     db.pragma_update(None, "user_version", 999).unwrap();

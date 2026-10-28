@@ -7,6 +7,8 @@ pub mod engine;
 pub mod file_manager;
 #[cfg(target_os = "linux")]
 pub mod files;
+#[cfg(target_os = "linux")]
+pub mod firewall;
 pub mod host;
 #[cfg(target_os = "linux")]
 pub mod linux;

@@ -36,6 +36,10 @@ mod file_operations;
 #[path = "runtime_update.rs"]
 mod update_operations;
 
+pub fn invalid_chunk() -> AgentResult {
+    rejected("invalid", "chunk data must be base64 and at most 4 MiB")
+}
+
 fn game_summary(verb: &str, game: Option<&DetectedGame>) -> String {
     match game {
         Some(game) if game.loader.as_deref() == Some("bedrock") => match game.version.as_str() {
@@ -166,7 +170,9 @@ pub fn validate_spec(spec: &ServerSpec) -> Result<(), &'static str> {
         }
     }
     for (path, transform) in &spec.files {
-        if transform.parser != "properties" || files::resolve(Path::new("/"), path).is_err() {
+        if !matches!(transform.parser.as_str(), "properties" | "file")
+            || files::resolve(Path::new("/"), path).is_err()
+        {
             return Err("unsupported configuration file transform");
         }
     }
@@ -487,6 +493,9 @@ struct Record {
     problem: Option<String>,
     operation: Option<OperationStatus>,
     game: Option<DetectedGame>,
+    // Set while an update is changing files, so an interrupted update can be put back.
+    #[serde(default)]
+    update_backup: Option<Uuid>,
 }
 
 impl Record {
@@ -583,6 +592,7 @@ impl Runtime {
         drop(records);
         self.clean_partial_backups()?;
         self.recover_restores().await?;
+        self.recover_updates().await;
         self.clean_uploads().await;
         Ok(())
     }
@@ -629,7 +639,47 @@ impl Runtime {
         .await
     }
 
-    async fn ensure_network(&self) -> io::Result<()> {
+    // The managed network exists and, unless disabled, is fenced off from the host and private
+    // networks. Rules are rebuilt every time, so a firewall reload cannot leave them missing.
+    pub async fn ensure_network(&self) -> io::Result<()> {
+        self.create_network().await?;
+        if !self.config.network_isolation {
+            return Ok(());
+        }
+        let gateway = self
+            .docker(
+                vec![
+                    "network".into(),
+                    "inspect".into(),
+                    "--format".into(),
+                    "{{(index .IPAM.Config 0).Gateway}}".into(),
+                    "--".into(),
+                    self.config.network_name.clone().into(),
+                ],
+                30,
+                64 * 1024,
+            )
+            .await?;
+        let gateway: std::net::Ipv4Addr = String::from_utf8_lossy(&gateway)
+            .trim()
+            .parse()
+            .map_err(|_| io::Error::other("managed network has no IPv4 gateway"))?;
+        let gateway_tcp_ports = self
+            .config
+            .container_proxy
+            .iter()
+            .filter(|(host, _)| host.parse::<std::net::Ipv4Addr>().ok() == Some(gateway))
+            .map(|(_, port)| *port)
+            .collect();
+        crate::firewall::apply(&crate::firewall::Isolation {
+            subnet: self.config.network_subnet.clone(),
+            gateway,
+            gateway_tcp_ports,
+        })
+        .await
+    }
+
+    async fn create_network(&self) -> io::Result<()> {
         let name = &self.config.network_name;
         if self
             .docker(
@@ -784,6 +834,7 @@ impl Runtime {
                     updated_at: now(),
                 }),
                 game: None,
+                update_backup: None,
             };
             if let Err(error) = persist(&self.layout, &record) {
                 return rejected("storage", error.to_string());
@@ -921,19 +972,29 @@ impl Runtime {
         tokio::task::spawn_blocking(move || files::chown_tree(&root, uid))
             .await
             .map_err(|_| io::Error::other("ownership fix-up failed"))??;
-        let root = volume.clone();
+        self.detect_installed(id, &spec, uid).await
+    }
+
+    // What the server's files contain now (game version and loader), read as the server's UID.
+    async fn detect_installed(
+        &self,
+        id: Uuid,
+        spec: &ServerSpec,
+        uid: u32,
+    ) -> io::Result<Option<DetectedGame>> {
+        let root = self.layout.volume(id);
         let jar = spec
             .variables
             .get("SERVER_JARFILE")
             .filter(|jar| jar.ends_with(".jar"))
             .cloned()
             .unwrap_or_else(|| "server.jar".into());
-        let game =
+        Ok(
             tokio::task::spawn_blocking(move || as_server(uid, || files::detect_game(&root, &jar)))
                 .await
                 .map_err(|_| io::Error::other("game detection failed"))?
-                .unwrap_or(None);
-        Ok(game)
+                .unwrap_or(None),
+        )
     }
 
     // Resolves the image to an immutable reference so later starts run exactly what was installed.
@@ -1114,12 +1175,16 @@ impl Runtime {
                             )?,
                         );
                     }
-                    let existing = files::read_text(&root, path)?.unwrap_or_default();
-                    files::write_atomic(
-                        &root,
-                        path,
-                        files::set_properties(&existing, &values).as_bytes(),
-                    )?;
+                    let existing = files::read_text(&root, path)?;
+                    let updated = match (transform.parser.as_str(), existing) {
+                        // Line replacements need the game's own file; it creates it on first run.
+                        ("file", None) => continue,
+                        ("file", Some(existing)) => files::replace_lines(&existing, &values),
+                        (_, existing) => {
+                            files::set_properties(&existing.unwrap_or_default(), &values)
+                        }
+                    };
+                    files::write_atomic(&root, path, updated.as_bytes())?;
                 }
                 if transform_spec.accept_eula {
                     files::write_atomic(&root, "eula.txt", b"eula=true\n")?;

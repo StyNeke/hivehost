@@ -3,6 +3,7 @@ pub mod auth;
 pub mod config;
 pub mod database;
 pub mod eggs;
+pub mod experimental;
 pub mod http;
 pub mod jobs;
 pub mod modrinth;

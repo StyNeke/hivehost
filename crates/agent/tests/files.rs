@@ -1,8 +1,8 @@
 #![cfg(target_os = "linux")]
 
 use manager_agent::files::{
-    as_server, chown_tree, detect_game, list_files, read_text, remove, render, resolve,
-    set_properties, write_atomic,
+    as_server, chown_tree, detect_game, list_files, read_text, remove, render, replace_lines,
+    resolve, set_properties, write_atomic,
 };
 use manager_core::host::{PortBinding, Transport};
 use std::{
@@ -345,4 +345,22 @@ fn ownership_fixup_does_not_follow_links_out_of_the_volume() {
         vec!["r.0.0.mca"]
     );
     assert!(list_files(&volume, "escape", ".jar").is_err());
+}
+
+#[test]
+fn line_replacements_match_line_starts_only() {
+    let mut values = std::collections::BTreeMap::new();
+    values.insert(
+        "server_port = 25565".to_string(),
+        "server_port = 25610".to_string(),
+    );
+    values.insert(
+        "address = \"0.0.0.0:25565\"".to_string(),
+        "address = \"0.0.0.0:25610\"".to_string(),
+    );
+    let config = "[server]\n  server_port = 25565\n# server_port = 25565 is the default\naddress = \"0.0.0.0:25565\"\nmotd = \"x\"\n";
+    assert_eq!(
+        replace_lines(config, &values),
+        "[server]\nserver_port = 25610\n# server_port = 25565 is the default\naddress = \"0.0.0.0:25610\"\nmotd = \"x\"\n"
+    );
 }

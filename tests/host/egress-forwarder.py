@@ -8,15 +8,21 @@ LISTEN_HOST:LISTEN_PORT (normally the managed Docker network gateway):
 - CONNECT requests are tunnelled to the upstream proxy unchanged.
 - Plain-HTTP proxy requests (for example apt's http:// mirrors) are re-fetched
   as HTTPS from the same host through the upstream proxy, verified with CA_FILE.
+- Plain-HTTP requests to a host:port listed in GM_TEST_LOCAL_HOSTS (comma
+  separated) go directly to it, for files served locally during tests.
 
 It is not part of the product and must not be installed on the production host.
 
 usage: egress-forwarder.py LISTEN_HOST LISTEN_PORT PROXY_HOST PROXY_PORT CA_FILE
 """
 import asyncio
+import os
 import ssl
 import sys
 from urllib.parse import urlsplit
+
+
+LOCAL_HOSTS = {h.strip() for h in os.environ.get("GM_TEST_LOCAL_HOSTS", "").split(",") if h.strip()}
 
 
 async def pipe(reader, writer):
@@ -60,8 +66,12 @@ async def main(listen_host, listen_port, proxy_host, proxy_port, ca_file):
                 await asyncio.gather(pipe(client_reader, upstream_writer), pipe(upstream_reader, client_writer))
                 return
             url = urlsplit(target)
-            reader, writer = await connect_upstream(url.hostname, 443)
-            await writer.start_tls(context, server_hostname=url.hostname)
+            local = f"{url.hostname}:{url.port or 80}" in LOCAL_HOSTS
+            if local:
+                reader, writer = await asyncio.open_connection(url.hostname, url.port or 80)
+            else:
+                reader, writer = await connect_upstream(url.hostname, 443)
+                await writer.start_tls(context, server_hostname=url.hostname)
             path = url.path or "/"
             if url.query:
                 path += "?" + url.query

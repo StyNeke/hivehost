@@ -409,3 +409,90 @@ pub(in crate::http) async fn retained(
     }
     Ok(Json(result))
 }
+
+// Uploads a .tar.gz of server files (for example a copy of a Pterodactyl server's volume) as an
+// imported backup. Nothing changes on the server until someone restores it.
+pub(in crate::http) async fn import(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<(StatusCode, Json<BackupInfo>), ApiError> {
+    use base64::Engine;
+    use futures_util::StreamExt;
+    const CHUNK: usize = 1024 * 1024;
+    let server = ServerId(id);
+    let (actor, _) = managed(&state, &headers, server).await?;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let upload_id = Uuid::new_v4();
+    let mut stream = body.into_data_stream();
+    let mut buffer: Vec<u8> = Vec::with_capacity(CHUNK);
+    let mut offset = 0u64;
+    let result: Result<BackupInfo, ApiError> = async {
+        loop {
+            let next = stream.next().await;
+            let finished = next.is_none();
+            if let Some(chunk) = next {
+                buffer.extend_from_slice(&chunk.map_err(|_| {
+                    error(
+                        StatusCode::BAD_REQUEST,
+                        "upload_failed",
+                        "The upload was interrupted",
+                    )
+                })?);
+            }
+            while buffer.len() > CHUNK || (finished && (offset == 0 || !buffer.is_empty())) {
+                let piece: Vec<u8> = buffer.drain(..buffer.len().min(CHUNK)).collect();
+                let last = finished && buffer.is_empty();
+                let answer = call(
+                    &state,
+                    Operation::ImportChunk {
+                        server_id: id,
+                        upload_id,
+                        offset,
+                        data: engine.encode(&piece),
+                        last,
+                    },
+                )
+                .await?;
+                offset += piece.len() as u64;
+                match answer {
+                    AgentResult::Accepted if !last => {}
+                    AgentResult::Backups(mut imported) if last && imported.len() == 1 => {
+                        return Ok(imported.remove(0));
+                    }
+                    AgentResult::Rejected(rejection) if rejection.code == "invalid" => {
+                        return Err((
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            Json(crate::http::ErrorBody {
+                                code: "invalid_archive",
+                                message: std::borrow::Cow::Owned(rejection.message),
+                                details: None,
+                            }),
+                        ));
+                    }
+                    AgentResult::Rejected(rejection) => return Err(rejected(rejection)),
+                    _ => return Err(storage_error()),
+                }
+            }
+            if finished {
+                return Err(storage_error());
+            }
+        }
+    }
+    .await;
+    record(
+        &state,
+        actor,
+        server,
+        "import_files",
+        if result.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        },
+        Some(format!("{} MiB archive", offset.div_ceil(1024 * 1024))),
+    )
+    .await;
+    result.map(|info| (StatusCode::CREATED, Json(info)))
+}

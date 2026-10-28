@@ -1,0 +1,52 @@
+{
+    "_comment": "Written for this project from SteelMC's README, release workflow and source (config/config.toml, 'Started Steel Server', SIGINT/SIGTERM shutdown). SteelMC reads console input through a terminal library, so console commands do not reach it in a container; the panel stops it with SIGINT. Not an upstream egg.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-10-28T00:00:00+00:00",
+    "name": "SteelMC (experimental)",
+    "author": "game-manager@localhost",
+    "description": "SteelMC, an independent Rust implementation of the Minecraft Java Edition server. Experimental: survival gameplay is incomplete and no plugins or mod loaders are supported (upstream README). Console commands are not available because SteelMC needs a terminal for input.",
+    "features": null,
+    "docker_images": {
+        "Alpine": "ghcr.io/ptero-eggs/yolks:alpine"
+    },
+    "file_denylist": [],
+    "startup": "./steel",
+    "config": {
+        "files": "{\n    \"config/config.toml\": {\n        \"parser\": \"file\",\n        \"find\": {\n            \"server_port = \": \"server_port = {{server.build.default.port}}\"\n        }\n    }\n}",
+        "startup": "{\n    \"done\": \"Started Steel Server\"\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/ash\n# SteelMC installation: downloads a published Linux build. Written for this project; SteelMC\n# itself publishes no egg. Server files: /mnt/server\nset -eu\napk add --no-cache curl\nmkdir -p /mnt/server\ncd /mnt/server\ncase \"$(uname -m)\" in\n    x86_64|amd64) ASSET=steel-linux-musl ;;\n    *) echo \"SteelMC publishes Linux release builds for x86_64 only\"; exit 1 ;;\nesac\nif [ -n \"${DOWNLOAD_URL:-}\" ]; then\n    URL=\"${DOWNLOAD_URL}\"\nelif [ \"${VERSION:-latest}\" = \"latest\" ]; then\n    URL=\"https://github.com/Steel-Foundation/SteelMC/releases/latest/download/${ASSET}\"\nelse\n    URL=\"https://github.com/Steel-Foundation/SteelMC/releases/download/${VERSION}/${ASSET}\"\nfi\necho \"Downloading SteelMC from: ${URL}\"\ncurl -fsSL \"${URL}\" -o steel.part\nchmod +x steel.part\nmv steel.part steel\n# The first start writes config/config.toml, whose port the panel then sets.\nif [ ! -f config/config.toml ]; then\n    timeout 10 ./steel < /dev/null || true\nfi\ntest -f config/config.toml || { echo \"SteelMC did not create its configuration\"; exit 1; }\necho \"Install complete\"\n",
+            "container": "ghcr.io/ptero-eggs/installers:alpine",
+            "entrypoint": "ash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Release",
+            "description": "Release tag to install, or latest.",
+            "env_variable": "VERSION",
+            "default_value": "latest",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Download URL",
+            "description": "Optional direct link to a steel-linux-musl build; overrides Release.",
+            "env_variable": "DOWNLOAD_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512",
+            "field_type": "text"
+        }
+    ]
+}

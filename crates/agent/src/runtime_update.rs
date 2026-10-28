@@ -39,6 +39,7 @@ impl Runtime {
         let runtime = Arc::clone(self);
         tokio::spawn(async move {
             let outcome = runtime.run_update(id, keep_game_version).await;
+            let _ = runtime.update(id, |r| r.update_backup = None).await;
             if was_running && let Err(error) = runtime.launch(id).await {
                 let _ = runtime
                     .update(id, |r| {
@@ -59,6 +60,16 @@ impl Runtime {
                 .ok_or_else(|| io::Error::other("server vanished"))?;
             (record.spec.clone(), record.uid, record.game.clone())
         };
+        // Automatic updates must be able to tell the game version before and after.
+        if keep_game_version
+            && previous
+                .as_ref()
+                .is_none_or(|game| game.loader.as_deref() == Some("bedrock"))
+        {
+            return Err(io::Error::other(
+                "automatic updates need a recognised game version, and this server's cannot be read reliably; update it manually",
+            ));
+        }
         self.ensure_network().await?;
         // Images first: a download failure leaves everything untouched.
         let pinned = self.prepare_images(id, &spec).await?;
@@ -72,20 +83,28 @@ impl Runtime {
                     "could not save the current files first, so nothing was changed: {error}"
                 ))
             })?;
+        self.update(id, |r| r.update_backup = Some(backup.id))
+            .await?;
         storage::ensure_mounted(&self.layout, id).await?;
         storage::grow_volume(&self.layout, id, spec.limits.disk_bytes).await?;
         let installed = self.run_installer(id, &spec, uid, &pinned).await;
-        let failure = match &installed {
-            Err(error) => Some(format!("The update failed: {error}")),
-            Ok(game) if keep_game_version => match (&previous, game) {
-                (Some(before), Some(after)) if before.version != after.version => Some(format!(
+        let failure = match (&installed, &previous) {
+            (Err(error), _) => Some(format!("The update failed: {error}")),
+            // Installers can exit successfully yet leave no game behind (for example an unknown
+            // version); keeping that would leave a server that cannot start.
+            (Ok(None), Some(_)) => Some(
+                "The update finished but no game could be found in the files afterwards (check the version in Settings)"
+                    .to_string(),
+            ),
+            (Ok(Some(after)), Some(before))
+                if keep_game_version && before.version != after.version =>
+            {
+                Some(format!(
                     "The update would move Minecraft {} to {}; automatic updates stay on the installed game version. Update manually to change versions",
                     before.version, after.version
-                )),
-                (Some(_), None) => Some("The updated files could not be recognised".into()),
-                _ => None,
-            },
-            Ok(_) => None,
+                ))
+            }
+            _ => None,
         };
         if let Some(failure) = failure {
             self.progress(id, "Putting the previous files back").await;
@@ -113,5 +132,38 @@ impl Runtime {
         })
         .await?;
         Ok(summary)
+    }
+
+    // An update interrupted by an agent restart may have changed some files; the pre-update
+    // backup puts all of them back before the server can start.
+    pub(super) async fn recover_updates(&self) {
+        let interrupted: Vec<(Uuid, Uuid)> = self
+            .records
+            .lock()
+            .await
+            .iter()
+            .filter_map(|(id, r)| r.update_backup.map(|b| (*id, b)))
+            .collect();
+        for (id, backup) in interrupted {
+            let archive = self.backup_path(id, backup);
+            let message = match self.restore_files(id, &archive).await {
+                Ok(()) => "The update was interrupted by an agent restart; the previous files were restored from the pre-update backup".to_string(),
+                Err(error) => format!(
+                    "The update was interrupted by an agent restart and restoring the previous files failed ({error}); restore the pre-update backup from the Backups tab"
+                ),
+            };
+            let _ = self
+                .update(id, |r| {
+                    r.update_backup = None;
+                    r.desired_running = false;
+                    r.operation = Some(manager_protocol::OperationStatus {
+                        kind: OperationKind::Update,
+                        state: manager_protocol::OperationState::Failed,
+                        message,
+                        updated_at: super::now(),
+                    });
+                })
+                .await;
+        }
     }
 }

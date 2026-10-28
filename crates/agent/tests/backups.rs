@@ -215,3 +215,42 @@ fn swaps_replace_content_and_interrupted_swaps_recover_the_original_data() {
         "original"
     );
 }
+
+#[test]
+fn pterodactyl_style_archives_with_dot_prefixes_import_and_escapes_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("volume");
+    fs::create_dir_all(source.join("world/region")).unwrap();
+    fs::write(source.join("world/region/r.0.0.mca"), vec![3u8; 5000]).unwrap();
+    fs::write(source.join("server.properties"), "server-port=25565\n").unwrap();
+    let archive = dir.path().join("server.tar.gz");
+    // The command an operator runs on a copied Pterodactyl volume.
+    let status = std::process::Command::new("tar")
+        .arg("czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&source)
+        .arg(".")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(verify_archive(fs::File::open(&archive).unwrap()).unwrap() >= 4);
+    let staging = dir.path().join("staging");
+    extract_archive(fs::File::open(&archive).unwrap(), &staging).unwrap();
+    assert_eq!(
+        fs::read(staging.join("world/region/r.0.0.mca"))
+            .unwrap()
+            .len(),
+        5000
+    );
+    assert_eq!(
+        fs::read_to_string(staging.join("server.properties")).unwrap(),
+        "server-port=25565\n"
+    );
+    // A leading "./" does not open a way out of the directory.
+    let file = tar::EntryType::Regular;
+    for name in ["./../escape", "./a/../../escape"] {
+        let hostile = hostile(&[(name, file, &b"x"[..], 0o644, None)]);
+        assert!(verify_archive(&hostile[..]).is_err(), "{name}");
+    }
+}
