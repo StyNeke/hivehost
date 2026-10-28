@@ -6,6 +6,7 @@
 //   npm install mineflayer bedrock-protocol jsp-raknet --ignore-scripts
 //   node tests/host/client-join.cjs java 127.0.0.1 25627 26.1
 //   node tests/host/client-join.cjs bedrock 127.0.0.1 19132 1.26.51
+//   node tests/host/client-join.cjs bedrock-ping 127.0.0.1 19132
 //
 // Exits 0 once the client has spawned in the world and the server echoed its chat message.
 const [edition, host, port, version] = process.argv.slice(2);
@@ -25,6 +26,11 @@ if (edition === 'java') {
   });
   bot.on('kicked', (reason) => { console.error('kicked:', JSON.stringify(reason)); process.exit(1); });
   bot.on('error', (error) => { console.error('error:', error.message); process.exit(1); });
+} else if (edition === 'bedrock-ping') {
+  // RakNet unconnected ping: proves the UDP port answers and reports the server's version.
+  require('bedrock-protocol').ping({ host, port: Number(port), raknetBackend: 'jsp-raknet' })
+    .then((advert) => done(`ping: ${advert.motd} · version ${advert.version} · protocol ${advert.protocol} · ${advert.playersOnline}/${advert.playersMax} players`))
+    .catch((error) => { console.error('ping failed:', error.message); process.exit(1); });
 } else if (edition === 'bedrock') {
   const bedrock = require('bedrock-protocol');
   const client = bedrock.createClient({ host, port: Number(port), version, username, offline: true, raknetBackend: 'jsp-raknet', skipPing: true });

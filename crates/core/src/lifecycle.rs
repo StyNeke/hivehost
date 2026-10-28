@@ -67,6 +67,18 @@ pub fn explain_exit(lines: &[String]) -> Option<ExitCause> {
                 permanent: true,
             });
         }
+        if line.contains("may be in use by another process") {
+            return Some(ExitCause {
+                message: "The game could not open its ports: another process uses them, or the host has IPv6 switched off (Bedrock also opens an IPv6 port).".into(),
+                permanent: true,
+            });
+        }
+        if line.contains("Using an allowlist without online authentication") {
+            return Some(ExitCause {
+                message: "Bedrock refuses an allowlist without online authentication. In server.properties set online-mode=true, or allow-list=false.".into(),
+                permanent: true,
+            });
+        }
         if line.contains("Failed to bind the Bedrock UDP socket") {
             return Some(ExitCause {
                 message: "Pumpkin could not open its Bedrock UDP listener here. In Files, open pumpkin.toml and set enabled = false under [networking.bedrock], then start the server.".into(),
