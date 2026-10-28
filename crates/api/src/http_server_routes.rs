@@ -24,6 +24,8 @@ use uuid::Uuid;
 pub(super) mod backups;
 #[path = "http_file_routes.rs"]
 pub(super) mod files;
+#[path = "http_settings_routes.rs"]
+pub(super) mod settings;
 
 fn runtime_error(err: RuntimeError) -> ApiError {
     match err {
@@ -34,6 +36,14 @@ fn runtime_error(err: RuntimeError) -> ApiError {
             "Administrator access required",
         ),
         RuntimeError::Conflict(message) => error(StatusCode::CONFLICT, "conflict", message),
+        RuntimeError::Rejected(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                code: "invalid_setting",
+                message: Cow::Owned(message),
+                details: None,
+            }),
+        ),
         _ => storage_error(),
     }
 }

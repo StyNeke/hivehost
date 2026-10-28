@@ -15,7 +15,7 @@ use manager_core::{
 use manager_protocol::{
     AgentResult, DetectedGame, ExtensionFolder, MAX_COMMAND_BYTES, MAX_CONSOLE_LINES,
     OperationKind, OperationState, OperationStatus, PowerState, Rejection, RemoteFile,
-    RuntimeStatus, ServerSpec,
+    RuntimeStatus, ServerSpec, ServerUsage, UsageSummary,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -499,6 +499,8 @@ pub struct Runtime {
     records: Mutex<BTreeMap<Uuid, Record>>,
     // Started-at timestamp for which the readiness marker has been seen.
     ready: std::sync::Mutex<HashMap<Uuid, i64>>,
+    // Latest usage per running server with the raw network counters behind its rates.
+    usage: std::sync::Mutex<HashMap<Uuid, (ServerUsage, u64, u64)>>,
 }
 
 impl Runtime {
@@ -511,6 +513,7 @@ impl Runtime {
             layout,
             records: Mutex::new(BTreeMap::new()),
             ready: std::sync::Mutex::new(HashMap::new()),
+            usage: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -955,6 +958,9 @@ impl Runtime {
             if !record.installed {
                 return rejected("not_installed", "install the server before starting it");
             }
+            if record.spec.image != spec.image {
+                record.image = None;
+            }
             record.spec = spec;
             // A manual start is a fresh decision: it clears the crash circuit breaker.
             record.restarts.clear();
@@ -963,6 +969,59 @@ impl Runtime {
             if let Err(error) = persist(&self.layout, record) {
                 return rejected("storage", error.to_string());
             }
+        }
+        // A changed runtime image is downloaded and pinned first, which can take minutes.
+        if self
+            .records
+            .lock()
+            .await
+            .get(&id)
+            .is_some_and(|r| r.image.is_none())
+        {
+            let _ = self
+                .update(id, |record| {
+                    record.operation = Some(OperationStatus {
+                        kind: OperationKind::Update,
+                        state: OperationState::Running,
+                        message: "Downloading the new runtime image".into(),
+                        updated_at: now(),
+                    });
+                })
+                .await;
+            let runtime = Arc::clone(self);
+            tokio::spawn(async move {
+                let outcome = async {
+                    let image = runtime
+                        .records
+                        .lock()
+                        .await
+                        .get(&id)
+                        .map(|r| r.spec.image.clone())
+                        .ok_or_else(|| io::Error::other("server vanished"))?;
+                    runtime
+                        .docker(
+                            vec![
+                                "pull".into(),
+                                "--quiet".into(),
+                                "--".into(),
+                                image.clone().into(),
+                            ],
+                            PULL_TIMEOUT_SECS,
+                            64 * 1024,
+                        )
+                        .await
+                        .map_err(|e| {
+                            io::Error::other(format!("could not download {image}: {e}"))
+                        })?;
+                    let pinned = runtime.pinned_image(&image).await?;
+                    runtime.update(id, |r| r.image = Some(pinned)).await?;
+                    runtime.launch(id).await?;
+                    Ok::<_, io::Error>(format!("Started with {image}"))
+                }
+                .await;
+                runtime.finish(id, OperationKind::Update, outcome).await;
+            });
+            return AgentResult::Accepted;
         }
         match self.launch(id).await {
             Ok(()) => AgentResult::Accepted,
@@ -999,6 +1058,8 @@ impl Runtime {
             )
         };
         storage::ensure_mounted(&self.layout, id).await?;
+        // A raised disk limit takes effect here; the filesystem grows online.
+        storage::grow_volume(&self.layout, id, spec.limits.disk_bytes).await?;
         check_port_free(&spec.binding)?;
         let volume = self.layout.volume(id);
         let root = volume.clone();
@@ -1320,6 +1381,10 @@ impl Runtime {
             game: record.game.clone(),
             disk_used_bytes: usage.map(|u| u.0),
             disk_total_bytes: usage.map(|u| u.1),
+            usage: state
+                .running
+                .then(|| self.usage.lock().ok().and_then(|u| u.get(&id).map(|e| e.0)))
+                .flatten(),
         }))
     }
 
@@ -1539,6 +1604,101 @@ impl Runtime {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
         }
+    }
+
+    // Samples usage of running servers concurrently; stopped servers drop out of the map.
+    pub async fn sample_usage(self: &Arc<Self>) {
+        let ids: Vec<Uuid> = self
+            .records
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, r)| r.installed)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut tasks = Vec::new();
+        for id in ids {
+            let runtime = Arc::clone(self);
+            tasks.push(tokio::spawn(async move {
+                let response = engine::request(
+                    &runtime.config.docker_socket,
+                    "GET",
+                    &format!("/containers/{}/stats?stream=false", runtime_name(id)),
+                    1024 * 1024,
+                    Duration::from_secs(5),
+                )
+                .await;
+                let sample = match response {
+                    Ok(response) if response.status == 200 => {
+                        crate::metrics::parse_stats(&response.body).ok()
+                    }
+                    _ => None,
+                };
+                (id, sample)
+            }));
+        }
+        let at = now();
+        for task in tasks {
+            let Ok((id, sample)) = task.await else {
+                continue;
+            };
+            let Ok(mut usage) = self.usage.lock() else {
+                return;
+            };
+            // A stopped container reports no CPU/memory; it is removed rather than shown as idle.
+            match sample.filter(|s| s.memory_limit_bytes > 0 && s.memory_bytes > 0) {
+                Some(sample) => {
+                    let (rx_rate, tx_rate) = match usage.get(&id) {
+                        Some((previous, rx, tx)) => (
+                            crate::metrics::rate(*rx, sample.rx_bytes, at - previous.measured_at),
+                            crate::metrics::rate(*tx, sample.tx_bytes, at - previous.measured_at),
+                        ),
+                        None => (0, 0),
+                    };
+                    usage.insert(
+                        id,
+                        (
+                            ServerUsage {
+                                cpu_millis: sample.cpu_millis,
+                                memory_bytes: sample.memory_bytes,
+                                memory_limit_bytes: sample.memory_limit_bytes,
+                                network_rx_bytes_per_sec: rx_rate,
+                                network_tx_bytes_per_sec: tx_rate,
+                                measured_at: at,
+                            },
+                            sample.rx_bytes,
+                            sample.tx_bytes,
+                        ),
+                    );
+                }
+                None => {
+                    usage.remove(&id);
+                }
+            }
+        }
+    }
+
+    pub async fn usage_all(&self) -> AgentResult {
+        let ids: Vec<Uuid> = self.records.lock().await.keys().copied().collect();
+        let current = self.usage.lock().map(|u| u.clone()).unwrap_or_default();
+        let summaries = ids
+            .into_iter()
+            .map(|id| {
+                let volume = self.layout.volume(id);
+                let disk = storage::mounted(&volume)
+                    .unwrap_or(false)
+                    .then(|| storage::volume_usage(&volume).ok().map(|u| u.0))
+                    .flatten();
+                (
+                    id,
+                    UsageSummary {
+                        usage: current.get(&id).map(|e| e.0),
+                        disk_used_bytes: disk,
+                    },
+                )
+            })
+            .collect();
+        AgentResult::Usage(summaries)
     }
 
     // Starts servers that were running before the agent stopped, one at a time.

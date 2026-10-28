@@ -18,7 +18,8 @@ use manager_core::{
 };
 use manager_protocol::{
     AgentRequest, AgentResponse, AgentResult, BackupInfo, BackupKind, DetectedGame, Operation,
-    OperationKind, OperationState, OperationStatus, PowerState, Rejection, RuntimeStatus, VERSION,
+    OperationKind, OperationState, OperationStatus, PowerState, Rejection, RuntimeStatus,
+    ServerUsage, UsageSummary, VERSION,
 };
 use serde_json::{Value, json};
 use std::{
@@ -63,6 +64,7 @@ struct FakeAgent {
     volume_root: std::path::PathBuf,
     backups: HashMap<Uuid, Vec<BackupInfo>>,
     retention: HashMap<Uuid, u8>,
+    last_start: Option<manager_protocol::ServerSpec>,
 }
 
 const BACKUP_BYTES: usize = 20 * 1024 * 1024;
@@ -197,6 +199,7 @@ impl FakeAgent {
             Operation::StartServer { spec } => match self.servers.get_mut(&spec.server_id) {
                 Some(server) if server.installed => {
                     server.running = true;
+                    self.last_start = Some(*spec);
                     AgentResult::Accepted
                 }
                 _ => rejection("not_installed", "install the server before starting it"),
@@ -240,7 +243,7 @@ impl FakeAgent {
                             current.state = OperationState::Succeeded;
                             current.message = "Installed Minecraft 26.3 with fabric".into();
                         }
-                        OperationKind::Extensions => {
+                        OperationKind::Extensions | OperationKind::Update => {
                             current.state = OperationState::Succeeded;
                             current.message = "Installed".into();
                         }
@@ -296,6 +299,7 @@ impl FakeAgent {
                     }),
                     disk_used_bytes: Some(1024),
                     disk_total_bytes: Some(4 * GIB),
+                    usage: None,
                 }))
             }
             Operation::InstallFiles {
@@ -392,6 +396,28 @@ impl FakeAgent {
                 }
                 AgentResult::Accepted
             }
+            Operation::UsageAll => AgentResult::Usage(
+                self.servers
+                    .iter()
+                    .map(|(id, server)| {
+                        let usage = server.running.then_some(ServerUsage {
+                            cpu_millis: 1500,
+                            memory_bytes: 2 * GIB,
+                            memory_limit_bytes: 3 * GIB,
+                            network_rx_bytes_per_sec: 10,
+                            network_tx_bytes_per_sec: 20,
+                            measured_at: now(),
+                        });
+                        (
+                            *id,
+                            UsageSummary {
+                                usage,
+                                disk_used_bytes: Some(1024),
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
             Operation::Ping => AgentResult::Pong,
         }
     }
@@ -802,6 +828,22 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
         .0,
         StatusCode::NO_CONTENT
     );
+    // Everyone sees usage, including people without access to the server.
+    let listed = send(&app, "GET", "/api/servers", outsider, None).await.1;
+    let bots = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "Bots")
+        .unwrap();
+    assert_eq!(
+        (
+            bots["can_access"].as_bool(),
+            bots["usage"]["cpu_percent"].as_f64()
+        ),
+        (Some(false), Some(150.0))
+    );
+    assert_eq!(bots["usage"]["memory_bytes"], 2 * GIB);
     let console = send(
         &app,
         "GET",
@@ -1175,11 +1217,26 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
         StatusCode::NO_CONTENT
     );
     for bad in ["../outside", "config/../../x"] {
-        let code = send(&app, "GET", &format!("{files}/text?path={bad}"), owner, None).await.0;
+        let code = send(
+            &app,
+            "GET",
+            &format!("{files}/text?path={bad}"),
+            owner,
+            None,
+        )
+        .await
+        .0;
         assert_eq!(code, StatusCode::BAD_REQUEST, "{bad}");
     }
     // A leading slash means the server's own root, never the host's.
-    let (code, body) = send(&app, "GET", &format!("{files}/text?path=/etc/passwd"), owner, None).await;
+    let (code, body) = send(
+        &app,
+        "GET",
+        &format!("{files}/text?path=/etc/passwd"),
+        owner,
+        None,
+    )
+    .await;
     assert_eq!(code, StatusCode::NOT_FOUND);
     assert!(!body.to_string().contains("root:x:0:0"));
     assert_eq!(
@@ -1423,6 +1480,161 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
     assert!(
         failed && received < BACKUP_BYTES,
         "revoked download stopped after {received} bytes"
+    );
+
+    // Startup settings: only editable variables and the egg's images; applied at the next start.
+    let settings = send(&app, "GET", &format!("{server}/settings"), member, None).await;
+    assert_eq!(settings.0, StatusCode::FORBIDDEN, "revoked member");
+    let (code, settings) = send(&app, "GET", &format!("{server}/settings"), owner, None).await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(settings["image"], "ghcr.io/ptero-eggs/yolks:java_25");
+    assert_eq!(settings["variables"][1]["env_variable"], "MC_VERSION");
+    assert_eq!(settings["variables"][1]["value"], "latest");
+    for (change, code) in [
+        (
+            json!({"image": "docker.io/library/alpine", "variables": {}}),
+            "invalid_setting",
+        ),
+        (
+            json!({"image": "ghcr.io/ptero-eggs/yolks:java_21", "variables": {"SERVER_JARFILE": "../x"}}),
+            "invalid_setting",
+        ),
+        (
+            json!({"image": "ghcr.io/ptero-eggs/yolks:java_21", "variables": {"UNKNOWN": "1"}}),
+            "invalid_setting",
+        ),
+    ] {
+        let (status, body) = send(
+            &app,
+            "PUT",
+            &format!("{server}/settings"),
+            owner,
+            Some(change),
+        )
+        .await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some(code)),
+            "{body}"
+        );
+    }
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            &format!("{server}/settings"),
+            outsider,
+            Some(json!({"image": "ghcr.io/ptero-eggs/yolks:java_21"}))
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (code, body) = send(
+        &app,
+        "PUT",
+        &format!("{server}/settings"),
+        owner,
+        Some(json!({"image": "ghcr.io/ptero-eggs/yolks:java_21", "variables": {"MC_VERSION": "1.21.10", "LOADER_VERSION": "latest"}})),
+    )
+    .await;
+    assert_eq!(
+        (code, body["changed"].clone()),
+        (StatusCode::OK, json!(["image", "MC_VERSION"]))
+    );
+
+    // Limits: admitted against the rest of the host, disk only grows.
+    let limits = |memory: u64, disk: u64, cpu: u32| json!({"memory_bytes": memory * GIB, "disk_bytes": disk * GIB, "cpu_millis": cpu});
+    for (change, status, code) in [
+        (limits(3, 2, 1000), StatusCode::BAD_REQUEST, "invalid_input"),
+        (
+            limits(64, 4, 1000),
+            StatusCode::CONFLICT,
+            "capacity_exceeded",
+        ),
+        (
+            limits(3, 4, 64_000),
+            StatusCode::CONFLICT,
+            "capacity_exceeded",
+        ),
+        (limits(0, 4, 1000), StatusCode::BAD_REQUEST, "invalid_input"),
+    ] {
+        let (got, body) = send(
+            &app,
+            "PUT",
+            &format!("{server}/limits"),
+            owner,
+            Some(change),
+        )
+        .await;
+        assert_eq!((got, body["code"].as_str()), (status, Some(code)), "{body}");
+    }
+    let (code, body) = send(
+        &app,
+        "PUT",
+        &format!("{server}/limits"),
+        owner,
+        Some(limits(4, 6, 1500)),
+    )
+    .await;
+    assert_eq!((code, body), (StatusCode::OK, limits(4, 6, 1500)));
+    for action in ["stop", "start"] {
+        let (code, body) = send(
+            &app,
+            "POST",
+            &format!("{server}/power"),
+            owner,
+            Some(json!({"action": action})),
+        )
+        .await;
+        assert!(code.is_success(), "{action}: {body}");
+    }
+    let started = fake.lock().unwrap().last_start.clone().unwrap();
+    assert_eq!(started.image, "ghcr.io/ptero-eggs/yolks:java_21");
+    assert_eq!(started.variables["MC_VERSION"], "1.21.10");
+    assert_eq!(
+        (
+            started.limits.memory_bytes,
+            started.limits.disk_bytes,
+            started.limits.cpu_millis
+        ),
+        (4 * GIB, 6 * GIB, 1500)
+    );
+    let activity = send(&app, "GET", &format!("{server}/activity"), owner, None)
+        .await
+        .1;
+    let text = activity.to_string();
+    assert!(
+        text.contains("image, MC_VERSION") && !text.contains("1.21.10"),
+        "{text}"
+    );
+    assert!(
+        text.contains("4.0 GiB RAM, 6.0 GiB disk, 1.50 CPU"),
+        "{text}"
+    );
+
+    // Members and teammates are listed for whoever manages the server.
+    let (code, members) = send(&app, "GET", &format!("{server}/members"), owner, None).await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        members,
+        json!([{"user_id": member_id.0, "username": "member", "enabled": false}])
+    );
+    assert_eq!(
+        send(&app, "GET", &format!("{server}/members"), outsider, None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let people = send(&app, "GET", "/api/users", outsider, None).await.1;
+    assert_eq!(
+        people
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["username"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["admin", "member", "outsider", "owner"]
     );
 
     // Deletion needs the exact name, then frees the reservation and the allocation.

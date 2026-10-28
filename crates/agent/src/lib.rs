@@ -10,6 +10,8 @@ pub mod files;
 pub mod host;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "linux")]
+pub mod metrics;
 pub mod rpc;
 #[cfg(target_os = "linux")]
 pub mod runtime;

@@ -81,9 +81,16 @@ fn tool(name: &str) -> PathBuf {
 }
 
 pub fn quota_tools_available() -> bool {
-    ["mkfs.ext4", "fallocate", "mount", "umount"]
-        .iter()
-        .all(|name| tool(name).exists())
+    [
+        "mkfs.ext4",
+        "fallocate",
+        "mount",
+        "umount",
+        "losetup",
+        "resize2fs",
+    ]
+    .iter()
+    .all(|name| tool(name).exists())
 }
 
 fn unescape_mount_path(field: &str) -> String {
@@ -235,6 +242,54 @@ pub async fn ensure_mounted(layout: &Layout, id: Uuid) -> io::Result<()> {
     .await?;
     // Other servers' UIDs must not be able to traverse into this volume.
     std::fs::set_permissions(&volume, std::fs::Permissions::from_mode(0o700))
+}
+
+// Grows a volume to `bytes` while its server is stopped: allocate, unmount, check, resize the
+// ext4 filesystem in the image, remount. (Online resizing is not reliable on every kernel.)
+// Shrinking is never done: it could cut off data.
+pub async fn grow_volume(layout: &Layout, id: Uuid, bytes: u64) -> io::Result<bool> {
+    let image = layout.image(id);
+    let volume = layout.volume(id);
+    let current = std::fs::metadata(&image)?.len();
+    if bytes <= current {
+        return Ok(false);
+    }
+    run(
+        "fallocate",
+        vec!["-l".into(), bytes.to_string().into(), image.clone().into()],
+        300,
+    )
+    .await?;
+    if mounted(&volume)? {
+        run("umount", vec![volume.clone().into()], 120).await?;
+    }
+    let resized = async {
+        // e2fsck exits 1 when it corrected something; anything above that is a real failure.
+        let status = tokio::process::Command::new(tool("e2fsck"))
+            .args(["-f", "-p"])
+            .arg(&image)
+            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .status();
+        let status = tokio::time::timeout(Duration::from_secs(1800), status)
+            .await
+            .map_err(|_| io::Error::other("filesystem check timed out"))??;
+        if !matches!(status.code(), Some(0 | 1)) {
+            return Err(io::Error::other(
+                "the filesystem check found errors it could not fix",
+            ));
+        }
+        run("resize2fs", vec![image.clone().into()], 1800).await
+    }
+    .await;
+    // Remount even if the resize failed, so the server keeps its (unchanged) data available.
+    let remounted = ensure_mounted(layout, id).await;
+    resized?;
+    remounted?;
+    Ok(true)
 }
 
 pub async fn remove_volume(layout: &Layout, id: Uuid) -> io::Result<()> {

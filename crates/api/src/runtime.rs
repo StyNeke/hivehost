@@ -24,6 +24,8 @@ pub enum RuntimeError {
     Conflict(&'static str),
     #[error("stored server data is invalid")]
     Invalid,
+    #[error("{0}")]
+    Rejected(String),
     #[error("storage operation failed")]
     Storage(#[from] rusqlite::Error),
 }
@@ -70,6 +72,23 @@ pub struct ServerDetail {
     pub install_state: InstallState,
     pub install_message: Option<String>,
     pub deleting: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SettingVariable {
+    pub env_variable: String,
+    pub name: String,
+    pub description: String,
+    pub value: String,
+    pub editable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Settings {
+    pub image: String,
+    pub images: Vec<(String, String)>,
+    pub startup: String,
+    pub variables: Vec<SettingVariable>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -202,6 +221,105 @@ impl RuntimeStore {
             binding: detail.binding,
             files: revision.files,
         })
+    }
+
+    // Startup settings: the pinned revision's viewable variables with current values and images.
+    pub fn settings(&self, server: ServerId) -> Result<Settings, RuntimeError> {
+        let (normalized, variables, image): (String, String, String) = self
+            .0
+            .query_row(
+                "SELECT r.normalized, p.variables, p.image FROM server_provisioning p
+                 JOIN egg_revisions r ON r.id = p.egg_revision_id WHERE p.server_id = ?1",
+                [server.0.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?
+            .ok_or(RuntimeError::NotFound)?;
+        let revision: EggRevision =
+            serde_json::from_str(&normalized).map_err(|_| RuntimeError::Invalid)?;
+        let values: BTreeMap<String, String> =
+            serde_json::from_str(&variables).map_err(|_| RuntimeError::Invalid)?;
+        Ok(Settings {
+            image,
+            images: revision.images.clone(),
+            startup: revision.startup.clone(),
+            variables: revision
+                .variables
+                .iter()
+                .filter(|v| v.user_viewable)
+                .map(|v| SettingVariable {
+                    env_variable: v.env_variable.clone(),
+                    name: v.name.clone(),
+                    description: v.description.clone(),
+                    value: values
+                        .get(&v.env_variable)
+                        .cloned()
+                        .unwrap_or_else(|| v.default_value.clone()),
+                    editable: v.user_editable,
+                })
+                .collect(),
+        })
+    }
+
+    // Validates and stores changed settings; they apply at the next start.
+    pub fn update_settings(
+        &mut self,
+        server: ServerId,
+        image: &str,
+        changes: &BTreeMap<String, String>,
+    ) -> Result<Vec<String>, RuntimeError> {
+        let transaction = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (normalized, variables, current_image): (String, String, String) = transaction
+            .query_row(
+                "SELECT r.normalized, p.variables, p.image FROM server_provisioning p
+                 JOIN egg_revisions r ON r.id = p.egg_revision_id WHERE p.server_id = ?1",
+                [server.0.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?
+            .ok_or(RuntimeError::NotFound)?;
+        let revision: EggRevision =
+            serde_json::from_str(&normalized).map_err(|_| RuntimeError::Invalid)?;
+        if !revision
+            .images
+            .iter()
+            .any(|(_, candidate)| candidate == image)
+        {
+            return Err(RuntimeError::Rejected(
+                "Choose an image offered by the server's egg".into(),
+            ));
+        }
+        let mut values: BTreeMap<String, String> =
+            serde_json::from_str(&variables).map_err(|_| RuntimeError::Invalid)?;
+        let mut changed = vec![];
+        if current_image != image {
+            changed.push("image".to_string());
+        }
+        for (name, value) in changes {
+            let variable = revision
+                .variables
+                .iter()
+                .find(|v| &v.env_variable == name && v.user_editable)
+                .ok_or_else(|| RuntimeError::Rejected(format!("{name} cannot be changed")))?;
+            manager_core::eggs::validate_variable(variable, value)
+                .map_err(|e| RuntimeError::Rejected(format!("{}: {e}", variable.name)))?;
+            if values.get(name) != Some(value) {
+                changed.push(name.clone());
+                values.insert(name.clone(), value.clone());
+            }
+        }
+        transaction.execute(
+            "UPDATE server_provisioning SET variables = ?1, image = ?2 WHERE server_id = ?3",
+            params![
+                serde_json::to_string(&values).map_err(|_| RuntimeError::Invalid)?,
+                image,
+                server.0.to_string()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(changed)
     }
 
     pub fn server_for_install_job(&self, job: JobId) -> Result<Option<ServerId>, RuntimeError> {

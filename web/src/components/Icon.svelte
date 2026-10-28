@@ -20,6 +20,7 @@
     archive: 'M3 4h18v4H3z M5 8v12h14V8 M10 12h4',
     folder: 'M3 6h6l2 2h10v11H3z',
     file: 'M6 3h8l4 4v14H6z M14 3v4h4',
+    sliders: 'M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M20 18h0 M16 4v4 M10 10v4 M18 16v4',
   };
   let { name, size = 18 }: { name: keyof typeof paths; size?: number } = $props();
 </script>

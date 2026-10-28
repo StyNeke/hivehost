@@ -422,6 +422,19 @@ pub fn router_with_services(
             get(list_allocations).post(add_allocation),
         )
         .route(
+            "/api/servers/{id}/settings",
+            get(server_routes::settings::settings).put(server_routes::settings::save_settings),
+        )
+        .route(
+            "/api/servers/{id}/limits",
+            axum::routing::put(server_routes::settings::save_limits),
+        )
+        .route(
+            "/api/servers/{id}/members",
+            get(server_routes::settings::members),
+        )
+        .route("/api/users", get(server_routes::settings::people))
+        .route(
             "/api/servers/{id}/members/{user_id}",
             axum::routing::put(set_member),
         )
@@ -615,9 +628,7 @@ fn library_error(err: LibraryError) -> ApiError {
             "forbidden",
             "Only the importer or administrator may change this egg",
         ),
-        LibraryError::NotFound => {
-            error(StatusCode::NOT_FOUND, "not_found", "Egg revision not found")
-        }
+        LibraryError::NotFound => error(StatusCode::NOT_FOUND, "not_found", "Not found"),
         _ => storage_error(),
     }
 }
@@ -684,10 +695,28 @@ async fn list_servers(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ServerSummary>>, ApiError> {
-    state
+    let mut servers = state
         .servers(&headers, |store, actor| store.list(actor))
+        .await?;
+    // Usage is advisory: if the agent is slow or down the list still loads without it.
+    if let Some(agent) = &state.agent
+        && let Ok(Ok(manager_protocol::AgentResult::Usage(usage))) = tokio::time::timeout(
+            Duration::from_secs(3),
+            agent.call(manager_protocol::Operation::UsageAll),
+        )
         .await
-        .map(Json)
+    {
+        for server in &mut servers {
+            if let Some(summary) = usage.get(&server.id.0) {
+                server.usage = Some(crate::servers::Usage {
+                    cpu_percent: summary.usage.map(|u| u.cpu_millis as f64 / 10.0),
+                    memory_bytes: summary.usage.map(|u| u.memory_bytes),
+                    disk_bytes: summary.disk_used_bytes,
+                });
+            }
+        }
+    }
+    Ok(Json(servers))
 }
 
 #[derive(Deserialize)]
@@ -756,9 +785,7 @@ fn provisioning_error(err: ProvisioningError) -> ApiError {
             "allocation_unavailable",
             "That IP and port are not available",
         ),
-        ProvisioningError::NotFound => {
-            error(StatusCode::NOT_FOUND, "not_found", "Egg revision not found")
-        }
+        ProvisioningError::NotFound => error(StatusCode::NOT_FOUND, "not_found", "Not found"),
         ProvisioningError::Storage(_) => storage_error(),
     }
 }

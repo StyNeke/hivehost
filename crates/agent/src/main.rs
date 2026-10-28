@@ -121,6 +121,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
+    {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            loop {
+                runtime.sample_usage().await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+    }
     let slots = Arc::new(Semaphore::new(16));
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;

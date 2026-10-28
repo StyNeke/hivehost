@@ -4,14 +4,15 @@
   import Icon from '../components/Icon.svelte';
 
   type Resources = { memory_bytes: number; disk_bytes: number; cpu_millis: number };
-  type Operation = { kind: 'install' | 'extensions' | 'delete' | 'backup' | 'restore'; state: 'running' | 'succeeded' | 'failed'; message: string };
+  type Operation = { kind: 'install' | 'extensions' | 'delete' | 'backup' | 'restore' | 'update'; state: 'running' | 'succeeded' | 'failed'; message: string };
   type Runtime = {
     installed: boolean; operation: Operation | null; power: 'offline' | 'starting' | 'running' | 'stopping';
     desired_running: boolean; problem: string | null; started_at: number | null; exit_code: number | null;
     game: { version: string; loader: string | null } | null; disk_used_bytes: number | null; disk_total_bytes: number | null;
+    usage: null | { cpu_millis: number; memory_bytes: number; memory_limit_bytes: number };
   };
   type Detail = {
-    id: string; name: string; is_owner: boolean; runtime: Runtime | null; runtime_error: string | null;
+    id: string; name: string; owner: string; is_owner: boolean; runtime: Runtime | null; runtime_error: string | null;
     details: null | {
       egg_name: string; limits: Resources; binding: { ip: string; port: number; transport: string };
       install_state: 'pending' | 'installing' | 'installed' | 'failed'; install_message: string | null; deleting: boolean;
@@ -22,12 +23,21 @@
   type Hit = { project_id: string; title: string; description: string; downloads: number };
   type Activity = { at: number; actor: string | null; action: string; outcome: string; detail: string | null };
   type FileEntry = { name: string; kind: 'file' | 'directory' | 'link' | 'other'; size: number; modified: number };
+  type Variable = { env_variable: string; name: string; description: string; value: string; editable: boolean };
+  type Settings = { image: string; images: [string, string][]; startup: string; variables: Variable[] };
+  type Member = { user_id: string; username: string; enabled: boolean };
+  type Person = { id: string; username: string };
   type Backup = { id: string; kind: 'manual' | 'pre_restore'; created_at: number; size_bytes: number };
 
   let { serverId, onBack, onDeleted }: { serverId: string; onBack: () => void; onDeleted: (name: string) => void } = $props();
 
   let detail = $state<Detail | null>(null);
-  let tab = $state<'console' | 'files' | 'mods' | 'backups' | 'activity' | 'settings'>('console');
+  let tab = $state<'console' | 'files' | 'mods' | 'backups' | 'settings' | 'members' | 'activity' | 'delete'>('console');
+  let settings = $state<Settings | null>(null);
+  let limits = $state({ memory: 0, cpu: 0, disk: 0 });
+  let members = $state<Member[]>([]);
+  let people = $state<Person[]>([]);
+  let grantTo = $state('');
   let folder = $state('');
   let entries = $state<FileEntry[]>([]);
   let editing = $state<{ path: string; text: string; version: string | null } | null>(null);
@@ -61,6 +71,7 @@
     install === 'pending' ? 'Waiting to install' : install === 'installing' ? 'Installing' : install === 'failed' ? 'Install failed' :
     operation?.kind === 'extensions' ? 'Updating mods' :
     operation?.kind === 'backup' ? 'Backing up' : operation?.kind === 'restore' ? 'Restoring' :
+    operation?.kind === 'update' ? 'Updating image' :
     { offline: 'Offline', starting: 'Starting', running: 'Running', stopping: 'Stopping' }[power]);
 
   function gib(bytes: number) { return `${(bytes / 1024 ** 3).toFixed(1)} GiB`; }
@@ -173,6 +184,41 @@
     await api(`/api/servers/${serverId}/backups/${backup.id}`, { method: 'DELETE' });
     await loadBackups();
   });
+  async function loadSettings() {
+    try {
+      settings = await api<Settings>(`/api/servers/${serverId}/settings`);
+      const current = detail?.details?.limits;
+      if (current) limits = { memory: current.memory_bytes / 1024 ** 3, cpu: current.cpu_millis / 1000, disk: current.disk_bytes / 1024 ** 3 };
+    } catch (reason) { report(reason); }
+  }
+  const later = () => (power === 'offline' ? 'They apply the next time the server starts.' : 'They apply after the next restart.');
+  const saveSettings = (event: SubmitEvent) => act(async () => {
+    event.preventDefault();
+    if (!settings) return;
+    const variables = Object.fromEntries(settings.variables.filter(v => v.editable).map(v => [v.env_variable, v.value]));
+    const result = await api<{ changed: string[] }>(`/api/servers/${serverId}/settings`, { method: 'PUT', body: JSON.stringify({ image: settings.image, variables }) });
+    notice = result.changed.length ? `Saved ${result.changed.length} change${result.changed.length === 1 ? '' : 's'}. ${later()}` : 'Nothing changed.';
+    await loadSettings();
+  });
+  const saveLimits = (event: SubmitEvent) => act(async () => {
+    event.preventDefault();
+    const body = { memory_bytes: Math.round(limits.memory * 1024 ** 3), disk_bytes: Math.round(limits.disk * 1024 ** 3), cpu_millis: Math.round(limits.cpu * 1000) };
+    await api(`/api/servers/${serverId}/limits`, { method: 'PUT', body: JSON.stringify(body) });
+    notice = `Limits saved. ${later()}`;
+  });
+  async function loadMembers() {
+    try {
+      [members, people] = await Promise.all([api<Member[]>(`/api/servers/${serverId}/members`), api<Person[]>('/api/users')]);
+    } catch (reason) { report(reason); }
+  }
+  const candidates = $derived(people.filter(p => p.id !== detail?.owner && !members.some(m => m.enabled && m.user_id === p.id)));
+  const setAccess = (userId: string, enabled: boolean, name: string) => act(async () => {
+    if (!enabled && !confirm(`Remove ${name}'s access? They lose the console, files and backups of this server at once.`)) return;
+    await api(`/api/servers/${serverId}/members/${userId}`, { method: 'PUT', body: JSON.stringify({ enabled }) });
+    grantTo = '';
+    notice = enabled ? `${name} can now manage this server.` : `${name} no longer has access.`;
+    await loadMembers();
+  });
   function size(bytes: number) { return bytes >= 1024 ** 3 ? gib(bytes) : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MiB`; }
 
   const join = (name: string) => (folder ? `${folder}/${name}` : name);
@@ -234,6 +280,8 @@
     if (next === 'files') void loadFolder('');
     if (next === 'backups') void loadBackups();
     if (next === 'activity') void loadActivity();
+    if (next === 'settings') void loadSettings();
+    if (next === 'members') void loadMembers();
   }
   const retryInstall = () => act(async () => { await api(`/api/servers/${serverId}/reinstall`, { method: 'POST' }); }, 'Installation queued again.');
   async function remove(event: SubmitEvent) {
@@ -271,8 +319,8 @@
     {/if}
 
     <div class="stats">
-      <div><span>Memory limit</span><strong>{gib(detail.details.limits.memory_bytes)}</strong></div>
-      <div><span>CPU limit</span><strong>{cores(detail.details.limits.cpu_millis)}</strong></div>
+      <div><span>Memory</span><strong>{runtime?.usage ? `${gib(runtime.usage.memory_bytes)} of ${gib(detail.details.limits.memory_bytes)}` : `${gib(detail.details.limits.memory_bytes)} limit`}</strong></div>
+      <div><span>CPU</span><strong>{runtime?.usage ? `${(runtime.usage.cpu_millis / 10).toFixed(0)}% of ${cores(detail.details.limits.cpu_millis)}` : `${cores(detail.details.limits.cpu_millis)} limit`}</strong></div>
       <div><span>Disk</span><strong>{runtime?.disk_used_bytes != null ? `${gib(runtime.disk_used_bytes)} of ${gib(runtime.disk_total_bytes ?? detail.details.limits.disk_bytes)}` : gib(detail.details.limits.disk_bytes)}</strong></div>
     </div>
 
@@ -288,8 +336,10 @@
       <button role="tab" aria-selected={tab === 'files'} class:active={tab === 'files'} disabled={!installed} onclick={() => open('files')}><Icon name="folder" size={15} /> Files</button>
       <button role="tab" aria-selected={tab === 'mods'} class:active={tab === 'mods'} disabled={!installed} onclick={() => open('mods')}><Icon name="puzzle" size={15} /> Mods</button>
       <button role="tab" aria-selected={tab === 'backups'} class:active={tab === 'backups'} disabled={!installed} onclick={() => open('backups')}><Icon name="archive" size={15} /> Backups</button>
+      <button role="tab" aria-selected={tab === 'settings'} class:active={tab === 'settings'} onclick={() => open('settings')}><Icon name="sliders" size={15} /> Settings</button>
+      <button role="tab" aria-selected={tab === 'members'} class:active={tab === 'members'} onclick={() => open('members')}><Icon name="users" size={15} /> Members</button>
       <button role="tab" aria-selected={tab === 'activity'} class:active={tab === 'activity'} onclick={() => open('activity')}><Icon name="activity" size={15} /> Activity</button>
-      <button role="tab" aria-selected={tab === 'settings'} class:active={tab === 'settings'} onclick={() => open('settings')}><Icon name="trash" size={15} /> Delete</button>
+      <button role="tab" aria-selected={tab === 'delete'} class:active={tab === 'delete'} onclick={() => open('delete')}><Icon name="trash" size={15} /> Delete</button>
     </div>
 
     {#if tab === 'console'}
@@ -395,6 +445,56 @@
           {/each}
         </ul>
         {#if !stopped && backups.length}<p class="muted">Stop the server to restore a backup.</p>{/if}
+      </section>
+    {:else if tab === 'settings'}
+      <div class="settings-grid">
+        <form class="panel settings-panel" onsubmit={saveSettings} aria-label="Startup settings">
+          <h2>Startup</h2>
+          {#if settings}
+            <label for="image">Runtime image</label>
+            <select id="image" bind:value={settings.image}>
+              {#each settings.images as [label, image] (image)}<option value={image}>{label}</option>{/each}
+            </select>
+            {#each settings.variables as variable (variable.env_variable)}
+              <label for={`var-${variable.env_variable}`}>{variable.name}</label>
+              <input id={`var-${variable.env_variable}`} bind:value={variable.value} readonly={!variable.editable} autocomplete="off" spellcheck="false" />
+              {#if variable.description}<small class="muted">{variable.description}{variable.editable ? '' : ' (fixed by the egg)'}</small>{/if}
+            {/each}
+            <details><summary>Startup command</summary><code class="startup">{settings.startup}</code></details>
+            <button class="primary" disabled={busy}>Save startup settings</button>
+            <p class="muted">Changing the image downloads it at the next start. Changing the game version may need a reinstall.</p>
+          {:else}<p class="muted">Loading settings…</p>{/if}
+        </form>
+        <form class="panel settings-panel" onsubmit={saveLimits} aria-label="Resource limits">
+          <h2>Resource limits</h2>
+          <label for="limit-memory">Memory (GiB)</label>
+          <input id="limit-memory" type="number" min="0.5" step="0.5" bind:value={limits.memory} />
+          <label for="limit-cpu">CPU (cores)</label>
+          <input id="limit-cpu" type="number" min="0.25" step="0.25" bind:value={limits.cpu} />
+          <label for="limit-disk">Disk (GiB)</label>
+          <input id="limit-disk" type="number" min={(detail.details.limits.disk_bytes / 1024 ** 3)} step="1" bind:value={limits.disk} />
+          <small class="muted">Disk can only grow; it is enlarged the next time the server starts. Limits must fit in the host's safe budget.</small>
+          <button class="primary" disabled={busy}>Save limits</button>
+        </form>
+      </div>
+    {:else if tab === 'members'}
+      <section class="panel members-panel" aria-label="Members">
+        <h2>Who can manage this server</h2>
+        <p class="muted">Members can use the console, files, mods, backups and settings, and delete the server. Administrators always have access.</p>
+        <ul class="mod-list">
+          {#each people.filter(p => p.id === detail?.owner) as owner (owner.id)}<li><div><strong>{owner.username}</strong><small>Owner</small></div></li>{/each}
+          {#each members.filter(m => m.enabled) as member (member.user_id)}
+            <li><div><strong>{member.username}</strong><small>Member</small></div>
+              <button class="secondary danger" aria-label={`Remove ${member.username}`} disabled={busy} onclick={() => setAccess(member.user_id, false, member.username)}>Remove</button></li>
+          {/each}
+        </ul>
+        <form class="mod-search" onsubmit={(event) => { event.preventDefault(); const person = people.find(p => p.id === grantTo); if (person) setAccess(person.id, true, person.username); }}>
+          <select aria-label="Teammate" bind:value={grantTo}>
+            <option value="">Choose a teammate…</option>
+            {#each candidates as person (person.id)}<option value={person.id}>{person.username}</option>{/each}
+          </select>
+          <button class="primary" disabled={busy || !grantTo}>Give access</button>
+        </form>
       </section>
     {:else if tab === 'activity'}
       <section class="panel">

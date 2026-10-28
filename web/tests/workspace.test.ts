@@ -5,12 +5,12 @@ import ServerWorkspace from '../src/pages/ServerWorkspace.svelte';
 
 const GIB = 1024 ** 3;
 const detail = (power: string, desired: boolean, extra: Record<string, unknown> = {}) => ({
-  id: 's1', name: 'Bots', is_owner: true, runtime_error: null,
+  id: 's1', name: 'Bots', owner: 'u-owner', is_owner: true, runtime_error: null,
   details: { egg_name: 'Fabric', limits: { memory_bytes: 3 * GIB, disk_bytes: 4 * GIB, cpu_millis: 2000 }, binding: { ip: '127.0.0.1', port: 25601, transport: 'tcp' }, install_state: 'installed', install_message: null, deleting: false },
   runtime: { installed: true, operation: null, power, desired_running: desired, problem: null, started_at: null, exit_code: null, game: { version: '26.3', loader: 'fabric' }, disk_used_bytes: GIB, disk_total_bytes: 4 * GIB, ...extra },
 });
 
-function mock(state: { detail: unknown; console?: string[] }) {
+function mock(state: { detail: unknown; console?: string[]; members?: unknown[] }) {
   const calls: { path: string; method: string; body: any }[] = [];
   const fetchMock = vi.fn(async (path: string, options?: RequestInit) => {
     const method = options?.method ?? 'GET';
@@ -20,6 +20,11 @@ function mock(state: { detail: unknown; console?: string[] }) {
     if (path === '/api/servers/s1/extensions' && method === 'GET') return Response.json({ game: { version: '26.3', loader: 'fabric' }, available: true, reason: null, managed: [{ project_id: 'carpet', title: 'Carpet', version_number: '26.3', filename: 'carpet.jar', dependency: false }], other_files: ['manual.jar'] });
     if (path.startsWith('/api/servers/s1/modrinth')) return Response.json([{ project_id: 'lithium', title: 'Lithium', description: 'Fast', downloads: 1 }]);
     if (path === '/api/servers/s1/extensions' && method === 'POST') return Response.json({ installing: [{ project_id: 'lithium', title: 'Lithium', version_number: '1.0', filename: 'l.jar', dependency: false }], removing: [] }, { status: 202 });
+    if (path === '/api/servers/s1/settings' && method === 'GET') return Response.json({ image: 'yolks:java_25', images: [['Java 25', 'yolks:java_25'], ['Java 21', 'yolks:java_21']], startup: 'java -jar {{SERVER_JARFILE}}', variables: [{ env_variable: 'SERVER_JARFILE', name: 'Server jar', description: 'Jar name', value: 'server.jar', editable: false }, { env_variable: 'MC_VERSION', name: 'Minecraft version', description: '', value: 'latest', editable: true }] });
+    if (path === '/api/servers/s1/settings' && method === 'PUT') return Response.json({ changed: ['image', 'MC_VERSION'] });
+    if (path === '/api/servers/s1/limits' && method === 'PUT') return Response.json(JSON.parse(String(options!.body)));
+    if (path === '/api/servers/s1/members') return Response.json(state.members ?? []);
+    if (path === '/api/users') return Response.json([{ id: 'u-owner', username: 'owner' }, { id: 'u-ana', username: 'ana' }, { id: 'u-bo', username: 'bo' }]);
     if (method !== 'GET') return new Response(null, { status: path.endsWith('/console') ? 204 : 202 });
     throw new Error(`Unexpected request: ${method} ${path}`);
   });
@@ -140,4 +145,47 @@ test('files can be browsed, edited with conflict detection, and uploaded', async
   await screen.findByText('This folder is empty.');
   await user.upload(screen.getByLabelText('Upload'), new File(['data'], 'notes.txt'));
   await waitFor(() => expect(calls.some(c => c.path === '/api/servers/s1/files/upload?path=config%2Fnotes.txt')).toBe(true));
+});
+
+test('startup settings and limits are saved and explain when they apply', async () => {
+  const calls = mock({ detail: detail('running', true, { usage: { cpu_millis: 1250, memory_bytes: 2 * GIB, memory_limit_bytes: 3 * GIB } }) });
+  render(ServerWorkspace, { serverId: 's1', onBack: () => {}, onDeleted: () => {} });
+  const user = userEvent.setup();
+  await screen.findByText('2.0 GiB of 3.0 GiB');
+  expect(screen.getByText('125% of 2 cores')).toBeTruthy();
+  await user.click(screen.getByRole('tab', { name: /Settings/ }));
+  const jar = (await screen.findByLabelText('Server jar')) as HTMLInputElement;
+  expect(jar.readOnly).toBe(true);
+  await user.selectOptions(screen.getByLabelText('Runtime image'), 'yolks:java_21');
+  const version = screen.getByLabelText('Minecraft version');
+  await user.clear(version);
+  await user.type(version, '1.21.10');
+  await user.click(screen.getByRole('button', { name: 'Save startup settings' }));
+  await screen.findByText(/Saved 2 changes. They apply after the next restart./);
+  expect(calls.find(c => c.method === 'PUT' && c.path === '/api/servers/s1/settings')!.body).toEqual({ image: 'yolks:java_21', variables: { MC_VERSION: '1.21.10' } });
+  const memory = screen.getByLabelText('Memory (GiB)');
+  await user.clear(memory);
+  await user.type(memory, '4.5');
+  await user.click(screen.getByRole('button', { name: 'Save limits' }));
+  await screen.findByText(/Limits saved/);
+  expect(calls.find(c => c.method === 'PUT' && c.path === '/api/servers/s1/limits')!.body).toEqual({ memory_bytes: 4.5 * GIB, disk_bytes: 4 * GIB, cpu_millis: 2000 });
+});
+
+test('members can be given and removed access; the owner is not offered', async () => {
+  const state = { detail: detail('offline', false), members: [{ user_id: 'u-bo', username: 'bo', enabled: true }] };
+  const calls = mock(state);
+  vi.stubGlobal('confirm', () => true);
+  render(ServerWorkspace, { serverId: 's1', onBack: () => {}, onDeleted: () => {} });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('tab', { name: /Members/ }));
+  await screen.findByText('Owner');
+  const select = screen.getByLabelText('Teammate') as HTMLSelectElement;
+  expect(Array.from(select.options).map(o => o.textContent)).toEqual(['Choose a teammate…', 'ana']);
+  await user.selectOptions(select, 'u-ana');
+  await user.click(screen.getByRole('button', { name: 'Give access' }));
+  await screen.findByText('ana can now manage this server.');
+  await user.click(screen.getByRole('button', { name: 'Remove bo' }));
+  await waitFor(() => expect(calls.filter(c => c.method === 'PUT' && c.path.startsWith('/api/servers/s1/members/')).map(c => [c.path, c.body.enabled])).toEqual([
+    ['/api/servers/s1/members/u-ana', true], ['/api/servers/s1/members/u-bo', false],
+  ]));
 });

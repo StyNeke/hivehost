@@ -3,8 +3,8 @@
 use manager_agent::{
     files::as_server,
     storage::{
-        Layout, create_volume, disk_budget, ensure_mounted, is_mount_point, lock_instance, mounted,
-        quota_tools_available, remove_volume, volume_usage,
+        Layout, create_volume, disk_budget, ensure_mounted, grow_volume, is_mount_point,
+        lock_instance, mounted, quota_tools_available, remove_volume, volume_usage,
     },
 };
 use std::{fs, io::Write, os::unix::fs::MetadataExt, path::Path};
@@ -76,6 +76,14 @@ async fn volume_is_a_hard_quota_owned_by_the_server_and_removable() {
     .join()
     .unwrap();
     assert_eq!(outcome.unwrap_err().raw_os_error(), Some(libc::ENOSPC));
+    // Raising the limit grows the mounted filesystem online; shrinking is never attempted.
+    std::fs::remove_file(volume.join("fill")).unwrap();
+    std::fs::write(volume.join("fill"), b"kept").unwrap();
+    assert!(grow_volume(&layout, id, 2 * limit).await.unwrap());
+    let (_, grown) = volume_usage(&volume).unwrap();
+    assert!(grown > total + limit / 2, "{total} -> {grown}");
+    assert!(!grow_volume(&layout, id, limit).await.unwrap());
+    assert_eq!(fs::read(volume.join("fill")).unwrap(), b"kept");
     // A remount (for example after reboot) keeps the data.
     std::process::Command::new("umount")
         .arg(&volume)

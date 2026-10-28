@@ -113,6 +113,7 @@ async fn runtime_operation(
         | Operation::CreateDirectory { .. }
         | Operation::RenamePath { .. }
         | Operation::DeletePath { .. }) => runtime.file_operation(operation).await,
+        Operation::UsageAll => runtime.usage_all().await,
         Operation::Ping | Operation::InspectHost => AgentResult::Unavailable,
     }
 }

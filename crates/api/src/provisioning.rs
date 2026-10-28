@@ -94,6 +94,58 @@ impl ProvisioningStore {
         .collect()
     }
 
+    // New limits for an existing server, admitted against everything else that is reserved.
+    // Disk can only grow; the agent grows the filesystem at the next start.
+    pub fn change_limits(
+        &mut self,
+        server: ServerId,
+        limits: Resources,
+        host: &HostAdmission,
+        now: i64,
+    ) -> Result<Resources, ProvisioningError> {
+        fresh_snapshot(host, now)?;
+        if !host.disk_quotas_ready {
+            return Err(ProvisioningError::HostNotReady(
+                "disk quota enforcement has not been qualified",
+            ));
+        }
+        if limits.memory_bytes > i64::MAX as u64 || limits.disk_bytes > i64::MAX as u64 {
+            return Err(ProvisioningError::InvalidInput(
+                "resource value is too large",
+            ));
+        }
+        let transaction = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: (i64, i64, u32) = transaction
+            .query_row(
+                "SELECT memory_bytes, disk_bytes, cpu_millis FROM server_provisioning WHERE server_id = ?1",
+                [server.0.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?
+            .ok_or(ProvisioningError::NotFound)?;
+        if (limits.disk_bytes as i64) < current.1 {
+            return Err(ProvisioningError::InvalidInput(
+                "disk limits can only grow; shrinking could cut off saved data",
+            ));
+        }
+        let all = server_reservations(&transaction)?;
+        let others = Resources {
+            memory_bytes: all.memory_bytes.saturating_sub(current.0 as u64),
+            disk_bytes: all.disk_bytes.saturating_sub(current.1 as u64),
+            cpu_millis: all.cpu_millis.saturating_sub(current.2),
+        };
+        let reserved = add_reserved(host.legacy_reserved, others)?;
+        admit(limits, host.budget, reserved).map_err(ProvisioningError::Capacity)?;
+        transaction.execute(
+            "UPDATE server_provisioning SET memory_bytes = ?1, disk_bytes = ?2, cpu_millis = ?3 WHERE server_id = ?4",
+            params![limits.memory_bytes as i64, limits.disk_bytes as i64, limits.cpu_millis, server.0.to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(limits)
+    }
+
     pub fn add_allocation(
         &mut self,
         actor: UserId,

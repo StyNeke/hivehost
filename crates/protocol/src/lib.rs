@@ -157,6 +157,7 @@ pub enum Operation {
         server_id: Uuid,
         path: String,
     },
+    UsageAll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,6 +202,8 @@ pub enum OperationKind {
     Delete,
     Backup,
     Restore,
+    // Preparing a changed runtime image before a start.
+    Update,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +237,17 @@ pub struct DetectedGame {
     pub loader: Option<String>,
 }
 
+// Latest measured usage of a running server. CPU is in millicores (1000 = one logical CPU).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerUsage {
+    pub cpu_millis: u32,
+    pub memory_bytes: u64,
+    pub memory_limit_bytes: u64,
+    pub network_rx_bytes_per_sec: u64,
+    pub network_tx_bytes_per_sec: u64,
+    pub measured_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeStatus {
     pub installed: bool,
@@ -247,6 +261,15 @@ pub struct RuntimeStatus {
     pub game: Option<DetectedGame>,
     pub disk_used_bytes: Option<u64>,
     pub disk_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub usage: Option<ServerUsage>,
+}
+
+// Usage of every managed server for overview pages, including disk use of stopped servers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageSummary {
+    pub usage: Option<ServerUsage>,
+    pub disk_used_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,4 +302,5 @@ pub enum AgentResult {
     Text { text: String, version: String },
     Saved { version: String },
     Chunk { data: String, size: u64 },
+    Usage(std::collections::BTreeMap<Uuid, UsageSummary>),
 }
