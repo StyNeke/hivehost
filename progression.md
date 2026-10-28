@@ -136,7 +136,7 @@ All implemented non-trivial slices were developed with failing tests first, then
 
 Goal session, 2026-10-27/28 (Ubuntu 24.04 container with Docker 29.9 and loop devices, Rust 1.99.0, Node 22):
 
-- Agent game runner, per-server quota volumes and file identity isolation (`7d8796f`); console/stdin, instance lock and egress trust fixes found by running the real Fabric egg (`8261147`); API worker, runtime routes and Modrinth (`fcf4bed`); server workspace and static serving (`3081be7`); browser acceptance and the UI fixes it found (`2465aab`); socket access for the non-root API (`40345b4`).
+- Agent game runner, per-server quota volumes and file identity isolation (`99927fd`); console/stdin, instance lock and egress trust fixes found by running the real Fabric egg (`8261147`); API worker, runtime routes and Modrinth (`fcf4bed`); server workspace and static serving (`3081be7`); browser acceptance and the UI fixes it found (`2465aab`); socket access for the non-root API (`40345b4`).
 - **Acceptance passed** with `tests/host/fabric-carpet-acceptance.cjs`: agent as root, API as a dedicated non-root user, browser (headless Chromium) over HTTPS through `tests/host/tls-proxy.py`. Install of the unmodified upstream Fabric egg (Minecraft 26.3, detected from files) took ~30 s; Carpet 26.3 installed from Modrinth with SHA-512 verification; readiness detected; `player Bot_One/Two/Three spawn` sent from the console; `list` reported `There are 3 of a max of 20 players online`; graceful stop saved the worlds and exited 0. Carpet logs Mojang profile-lookup warnings for bot names without accounts; that is expected.
 - Also verified directly against the agent: graceful host shutdown (SIGTERM) stopped the running server and kept it desired-running; the next agent start restored it; a second agent refuses the same data root; forced stop after the grace period is recorded; hard quota refuses writes past the limit.
 - Edge cases found by real runs and fixed: `docker create -i` closed stdin after the first command (now `run --detach`); two agents on one data root; Netty needing exec on `/tmp`; TLS-inspecting egress; quick console commands dropped by the browser's implicit-submit rule; unreadable root-owned socket for a non-root API; API ignoring SIGTERM.
@@ -295,7 +295,7 @@ The development proxy targets API port 19090. No API process/private HTTPS proxy
 - `244e969`: shared versioned database initialization and atomic resource/allocation/server/install-job creation.
 - `f03c916`: WIP host inspection (bounded commands, Docker inventory, hardware/interface parsing) with the client stub.
 - `8b0cd49`: agent client transport. `0760c84`: host-backed HTTP creation/allocations/overview. `9e8e98b`: creation page.
-- `d2415bc`: Fabric egg support. `7d8796f`: agent game runner and quota storage. `8261147`: stdin/lock/egress fixes. `fcf4bed`: API runtime and Modrinth. `3081be7`: workspace and static serving. `2465aab`: browser acceptance. Later: socket group grant, SIGTERM handling, deployment templates.
+- `d2415bc`: Fabric egg support. `99927fd`: agent game runner and quota storage. `8261147`: stdin/lock/egress fixes. `fcf4bed`: API runtime and Modrinth. `3081be7`: workspace and static serving. `2465aab`: browser acceptance. Later: socket group grant, SIGTERM handling, deployment templates.
 
 Use `git log` and `git status` for the final current commit; documentation-only follow-ups may be newer than the implementation checkpoints above.
 
