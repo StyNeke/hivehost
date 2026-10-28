@@ -188,6 +188,14 @@ Goal session continued, 2026-10-28 (same Ubuntu 24.04 container with Docker 29.9
   - Bedrock 1.26.60 defaults to `transport=nethernet`, which opens one dual-stack IPv6 socket. `transport=raknet` also needs IPv6 (port 19133).
   - This sandbox kernel has no IPv6 (`/proc/sys/net/ipv6` is missing), so the server either listens only on its LAN discovery port (7551) or exits.
   - Check this on the Debian host with `tests/host/client-join.cjs bedrock-ping` and `bedrock`.
+- **Re-checked limits of this sandbox (after the goal's stop check):**
+  - Bedrock join:
+    - Also tried with Bedrock 1.26.51.1 (`BEDROCK_VERSION`, the exact version bedrock-protocol supports), under both `transport=nethernet` (only ports 7551 and an ephemeral one open) and `transport=raknet` (exits: "Port [19132]/[19133] may be in use").
+    - The cause is the kernel: it was built without IPv6. `socket(AF_INET6)` fails with errno 97, `/proc/sys/net/ipv6` does not exist, and there is no module loader.
+  - Live GitHub status: the sandbox proxy answers `api.github.com` with its own 403. The running panel showed both projects as stale with "GitHub answered with status 403", which is the live outage path; the success path was only tested against a fake.
+  - Debian host: `100.116.183.201:22` is unreachable from this sandbox.
+
+  All three need the real host (or any machine with IPv6 and normal internet). The commands are in the runbook.
 - **Debian 13 userland** (`tests/host/debian-userland.sh`): 28 agent host tests passed in a privileged `debian:trixie` container, using Debian's e2fsprogs 1.47.2, util-linux and iptables 1.8.11. They covered:
   - Quota volume, ENOSPC and offline resize.
   - Archives, file manager, file identity, socket permissions and firewall rules.
