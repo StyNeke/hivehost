@@ -158,6 +158,13 @@ pub enum Operation {
         path: String,
     },
     UsageAll,
+    // Re-runs the egg installer on the existing files (new builds of the chosen version), after a
+    // pre-update backup. With `keep_game_version`, a result with another game version is rolled
+    // back, so automatic updates never move a world to a new Minecraft version.
+    UpdateServer {
+        spec: Box<ServerSpec>,
+        keep_game_version: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +190,8 @@ pub enum BackupKind {
     Manual,
     // Made automatically before a restore so the replaced data can be recovered.
     PreRestore,
+    // Made automatically before an update; an update that fails is rolled back from it.
+    PreUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

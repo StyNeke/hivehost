@@ -27,12 +27,17 @@
   type Settings = { image: string; images: [string, string][]; startup: string; variables: Variable[] };
   type Member = { user_id: string; username: string; enabled: boolean };
   type Person = { id: string; username: string };
-  type Backup = { id: string; kind: 'manual' | 'pre_restore'; created_at: number; size_bytes: number };
+  type Schedule = { id?: string; action: 'restart' | 'backup' | 'command' | 'update'; command: string | null; hour: number; minute: number; weekdays: number; timezone: string; enabled: boolean; next_run_at?: number; last_run_at?: number | null; last_outcome?: string | null };
+  type Backup = { id: string; kind: 'manual' | 'pre_restore' | 'pre_update'; created_at: number; size_bytes: number };
 
   let { serverId, onBack, onDeleted }: { serverId: string; onBack: () => void; onDeleted: (name: string) => void } = $props();
 
   let detail = $state<Detail | null>(null);
-  let tab = $state<'console' | 'files' | 'mods' | 'backups' | 'settings' | 'members' | 'activity' | 'delete'>('console');
+  let tab = $state<'console' | 'files' | 'mods' | 'backups' | 'schedules' | 'settings' | 'members' | 'activity' | 'delete'>('console');
+  const localZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
+  const blankSchedule = (): Schedule => ({ action: 'restart', command: '', hour: 4, minute: 0, weekdays: 127, timezone: localZone, enabled: true });
+  let schedules = $state<Schedule[]>([]);
+  let draft = $state<Schedule | null>(null);
   let settings = $state<Settings | null>(null);
   let limits = $state({ memory: 0, cpu: 0, disk: 0 });
   let members = $state<Member[]>([]);
@@ -71,9 +76,14 @@
     install === 'pending' ? 'Waiting to install' : install === 'installing' ? 'Installing' : install === 'failed' ? 'Install failed' :
     operation?.kind === 'extensions' ? 'Updating mods' :
     operation?.kind === 'backup' ? 'Backing up' : operation?.kind === 'restore' ? 'Restoring' :
-    operation?.kind === 'update' ? 'Updating image' :
+    operation?.kind === 'update' ? 'Updating' :
     { offline: 'Offline', starting: 'Starting', running: 'Running', stopping: 'Stopping' }[power]);
 
+  function gameLabel(game: Runtime['game']) {
+    if (!game) return '';
+    if (game.loader === 'bedrock') return game.version === 'Bedrock' ? 'Minecraft Bedrock Edition' : `Minecraft Bedrock Edition ${game.version}`;
+    return `Minecraft ${game.version}${game.loader ? ` with ${game.loader}` : ''}`;
+  }
   function gib(bytes: number) { return `${(bytes / 1024 ** 3).toFixed(1)} GiB`; }
   function cores(millis: number) { return `${(millis / 1000).toFixed(2).replace(/\.?0+$/, '')} cores`; }
   function when(at: number) { return new Date(at * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); }
@@ -219,6 +229,34 @@
     notice = enabled ? `${name} can now manage this server.` : `${name} no longer has access.`;
     await loadMembers();
   });
+  const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const ACTIONS = { restart: 'Restart', backup: 'Back up', command: 'Run command', update: 'Update (same game version)' };
+  function days(mask: number) { return mask === 127 ? 'Every day' : mask === 31 ? 'Weekdays' : DAYS.filter((_, i) => mask & (1 << i)).join(', '); }
+  const pad = (n: number) => String(n).padStart(2, '0');
+  async function loadSchedules() {
+    try { schedules = await api<Schedule[]>(`/api/servers/${serverId}/schedules`); } catch (reason) { report(reason); }
+  }
+  const saveSchedule = (event: SubmitEvent) => act(async () => {
+    event.preventDefault();
+    if (!draft) return;
+    const { id, next_run_at, last_run_at, last_outcome, ...body } = draft;
+    const payload = { ...body, command: body.action === 'command' ? body.command : null };
+    if (id) await api(`/api/servers/${serverId}/schedules/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+    else await api(`/api/servers/${serverId}/schedules`, { method: 'POST', body: JSON.stringify(payload) });
+    draft = null;
+    notice = 'Schedule saved.';
+    await loadSchedules();
+  });
+  const removeSchedule = (schedule: Schedule) => act(async () => {
+    if (!confirm('Delete this schedule?')) return;
+    await api(`/api/servers/${serverId}/schedules/${schedule.id}`, { method: 'DELETE' });
+    await loadSchedules();
+  });
+  const updateServer = () => act(async () => {
+    if (!confirm('Update the server? It runs the installer again with the current startup settings. A backup is made first and the previous files are put back if the update fails. A running server is stopped and started again.')) return;
+    await api(`/api/servers/${serverId}/update`, { method: 'POST' });
+    notice = 'Updating. Check mods afterwards if the game version changed.';
+  });
   function size(bytes: number) { return bytes >= 1024 ** 3 ? gib(bytes) : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MiB`; }
 
   const join = (name: string) => (folder ? `${folder}/${name}` : name);
@@ -282,6 +320,7 @@
     if (next === 'activity') void loadActivity();
     if (next === 'settings') void loadSettings();
     if (next === 'members') void loadMembers();
+    if (next === 'schedules') { draft = null; void loadSchedules(); }
   }
   const retryInstall = () => act(async () => { await api(`/api/servers/${serverId}/reinstall`, { method: 'POST' }); }, 'Installation queued again.');
   async function remove(event: SubmitEvent) {
@@ -296,7 +335,7 @@
       <button class="link-button" onclick={onBack}><Icon name="chevron" size={13} /> Servers</button>
       <h1>{detail?.name ?? 'Server'}</h1>
       {#if detail?.details}
-        <p>{[detail.details.egg_name, runtime?.game ? `Minecraft ${runtime.game.version}${runtime.game.loader ? ` with ${runtime.game.loader}` : ''}` : '', `${detail.details.binding.ip}:${detail.details.binding.port}`].filter(Boolean).join(' · ')}</p>
+        <p>{[detail.details.egg_name, gameLabel(runtime?.game ?? null), `${detail.details.binding.ip}:${detail.details.binding.port}`].filter(Boolean).join(' · ')}</p>
       {/if}
     </div>
     {#if detail?.details}
@@ -336,6 +375,7 @@
       <button role="tab" aria-selected={tab === 'files'} class:active={tab === 'files'} disabled={!installed} onclick={() => open('files')}><Icon name="folder" size={15} /> Files</button>
       <button role="tab" aria-selected={tab === 'mods'} class:active={tab === 'mods'} disabled={!installed} onclick={() => open('mods')}><Icon name="puzzle" size={15} /> Mods</button>
       <button role="tab" aria-selected={tab === 'backups'} class:active={tab === 'backups'} disabled={!installed} onclick={() => open('backups')}><Icon name="archive" size={15} /> Backups</button>
+      <button role="tab" aria-selected={tab === 'schedules'} class:active={tab === 'schedules'} disabled={!installed} onclick={() => open('schedules')}><Icon name="clock" size={15} /> Schedules</button>
       <button role="tab" aria-selected={tab === 'settings'} class:active={tab === 'settings'} onclick={() => open('settings')}><Icon name="sliders" size={15} /> Settings</button>
       <button role="tab" aria-selected={tab === 'members'} class:active={tab === 'members'} onclick={() => open('members')}><Icon name="users" size={15} /> Members</button>
       <button role="tab" aria-selected={tab === 'activity'} class:active={tab === 'activity'} onclick={() => open('activity')}><Icon name="activity" size={15} /> Activity</button>
@@ -436,7 +476,7 @@
         {#if !backups.length}<p class="muted">No backups yet.</p>{/if}
         <ul class="mod-list">
           {#each backups as backup (backup.id)}
-            <li><div><strong>{when(backup.created_at)}</strong><small>{size(backup.size_bytes)}{backup.kind === 'pre_restore' ? ' · saved automatically before a restore' : ''}</small></div>
+            <li><div><strong>{when(backup.created_at)}</strong><small>{size(backup.size_bytes)}{backup.kind === 'pre_restore' ? ' · saved automatically before a restore' : backup.kind === 'pre_update' ? ' · saved automatically before an update' : ''}</small></div>
               <div class="row-actions">
                 <a class="secondary" href={`/api/servers/${serverId}/backups/${backup.id}/download`} download>Download</a>
                 <button class="secondary" aria-label={`Restore backup from ${when(backup.created_at)}`} disabled={busy || !stopped || !!operation} onclick={() => restoreBackup(backup)}>Restore</button>
@@ -445,6 +485,48 @@
           {/each}
         </ul>
         {#if !stopped && backups.length}<p class="muted">Stop the server to restore a backup.</p>{/if}
+      </section>
+    {:else if tab === 'schedules'}
+      <section class="panel schedules-panel" aria-label="Schedules">
+        <div class="backup-heading">
+          <div><h2>Schedules</h2><p>Run restarts, backups, console commands or updates at a set time. Times use the chosen time zone, including daylight saving. A run missed while the panel was down is skipped, not run late.</p></div>
+          <button class="primary" disabled={busy || !!draft} onclick={() => { draft = blankSchedule(); }}>New schedule</button>
+        </div>
+        {#if draft}
+          <form class="settings-panel schedule-form" onsubmit={saveSchedule} aria-label="Schedule">
+            <label for="schedule-action">Action</label>
+            <select id="schedule-action" bind:value={draft.action}>
+              {#each Object.entries(ACTIONS) as [value, label] (value)}<option {value}>{label}</option>{/each}
+            </select>
+            {#if draft.action === 'command'}
+              <label for="schedule-command">Console command</label>
+              <input id="schedule-command" bind:value={draft.command} maxlength="512" placeholder="say Restarting soon" autocomplete="off" />
+            {/if}
+            {#if draft.action === 'update'}<small class="muted">Scheduled updates install newer builds of the current game version only; a backup is made first and a failed update is rolled back.</small>{/if}
+            <label for="schedule-time">Time</label>
+            <input id="schedule-time" type="time" value={`${pad(draft.hour)}:${pad(draft.minute)}`} onchange={(event) => { const [h, m] = event.currentTarget.value.split(':').map(Number); if (draft && !isNaN(h) && !isNaN(m)) { draft.hour = h; draft.minute = m; } }} />
+            <fieldset class="weekdays"><legend>Days</legend>
+              {#each DAYS as day, index (day)}
+                <label class="checkbox"><input type="checkbox" checked={(draft.weekdays & (1 << index)) !== 0} onchange={(event) => { if (draft) draft.weekdays = event.currentTarget.checked ? draft.weekdays | (1 << index) : draft.weekdays & ~(1 << index); }} /> {day}</label>
+              {/each}
+            </fieldset>
+            <label for="schedule-zone">Time zone</label>
+            <input id="schedule-zone" bind:value={draft.timezone} autocomplete="off" spellcheck="false" />
+            <label class="checkbox"><input type="checkbox" bind:checked={draft.enabled} /> Enabled</label>
+            <div class="row-actions"><button type="button" class="secondary" onclick={() => { draft = null; }}>Cancel</button><button class="primary" disabled={busy || !draft.weekdays}>Save schedule</button></div>
+          </form>
+        {/if}
+        {#if !schedules.length && !draft}<p class="muted">No schedules yet.</p>{/if}
+        <ul class="mod-list">
+          {#each schedules as schedule (schedule.id)}
+            <li><div><strong>{ACTIONS[schedule.action]}{schedule.action === 'command' ? `: ${schedule.command}` : ''}</strong>
+              <small>{days(schedule.weekdays)} at {pad(schedule.hour)}:{pad(schedule.minute)} ({schedule.timezone}){schedule.enabled ? ` · next ${when(schedule.next_run_at ?? 0)}` : ' · paused'}{schedule.last_outcome ? ` · last: ${schedule.last_outcome}` : ''}</small></div>
+              <div class="row-actions">
+                <button class="secondary" aria-label={`Edit schedule ${ACTIONS[schedule.action]}`} disabled={busy} onclick={() => { draft = { ...schedule, command: schedule.command ?? '' }; }}>Edit</button>
+                <button class="secondary danger" aria-label={`Delete schedule ${ACTIONS[schedule.action]}`} disabled={busy} onclick={() => removeSchedule(schedule)}>Delete</button>
+              </div></li>
+          {/each}
+        </ul>
       </section>
     {:else if tab === 'settings'}
       <div class="settings-grid">
@@ -462,7 +544,8 @@
             {/each}
             <details><summary>Startup command</summary><code class="startup">{settings.startup}</code></details>
             <button class="primary" disabled={busy}>Save startup settings</button>
-            <p class="muted">Changing the image downloads it at the next start. Changing the game version may need a reinstall.</p>
+            <p class="muted">Changing the image downloads it at the next start. To install a different game version or the newest build, save the version here and run an update.</p>
+            <button type="button" class="secondary" disabled={busy || !installed || !!operation} onclick={updateServer}>Update server</button>
           {:else}<p class="muted">Loading settings…</p>{/if}
         </form>
         <form class="panel settings-panel" onsubmit={saveLimits} aria-label="Resource limits">

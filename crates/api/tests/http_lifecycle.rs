@@ -10,7 +10,8 @@ use axum::{
     routing::get,
 };
 use manager_api::{
-    agent_client::AgentClient, auth::AuthStore, eggs::EggStore, http::router_with_services, worker,
+    agent_client::AgentClient, auth::AuthStore, eggs::EggStore, http::router_with_services,
+    schedules, worker,
 };
 use manager_core::{
     capacity::Resources,
@@ -65,6 +66,7 @@ struct FakeAgent {
     backups: HashMap<Uuid, Vec<BackupInfo>>,
     retention: HashMap<Uuid, u8>,
     last_start: Option<manager_protocol::ServerSpec>,
+    updates: Vec<(Uuid, bool)>,
 }
 
 const BACKUP_BYTES: usize = 20 * 1024 * 1024;
@@ -396,6 +398,18 @@ impl FakeAgent {
                 }
                 AgentResult::Accepted
             }
+            Operation::UpdateServer {
+                spec,
+                keep_game_version,
+            } => match self.servers.get_mut(&spec.server_id) {
+                Some(server) if server.installed => {
+                    self.updates.push((spec.server_id, keep_game_version));
+                    server.operation =
+                        op(OperationKind::Update, OperationState::Running, "Updating");
+                    AgentResult::Accepted
+                }
+                _ => rejection("not_installed", "install the server first"),
+            },
             Operation::UsageAll => AgentResult::Usage(
                 self.servers
                     .iter()
@@ -1636,6 +1650,163 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
             .collect::<Vec<_>>(),
         ["admin", "member", "outsider", "owner"]
     );
+
+    // Schedules: validated, each occurrence runs once, and missed ones are not run late.
+    let schedules = format!("{server}/schedules");
+    let plan = |action: &str| json!({"action": action, "hour": 4, "minute": 30, "weekdays": 127, "timezone": "Europe/Amsterdam", "enabled": true});
+    let mut invalid = vec![
+        plan("command"),
+        plan("restart"),
+        plan("restart"),
+        plan("restart"),
+    ];
+    invalid[1]["timezone"] = json!("Mars/Base");
+    invalid[2]["weekdays"] = json!(0);
+    invalid[3]["hour"] = json!(24);
+    for body in invalid {
+        let (code, body) = send(&app, "POST", &schedules, owner, Some(body)).await;
+        assert_eq!(
+            (code, body["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("invalid_schedule")),
+            "{body}"
+        );
+    }
+    assert_eq!(
+        send(&app, "POST", &schedules, outsider, Some(plan("restart")))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut command = plan("command");
+    command["command"] = json!("say hello");
+    let (code, created) = send(&app, "POST", &schedules, owner, Some(command)).await;
+    assert_eq!(code, StatusCode::CREATED, "{created}");
+    let due = created["next_run_at"].as_i64().unwrap();
+    assert!(due > now() && due <= now() + 7 * 86400);
+    let mut update = plan("update");
+    update["hour"] = json!(5);
+    let (_, update) = send(&app, "POST", &schedules, owner, Some(update)).await;
+    let update_due = update["next_run_at"].as_i64().unwrap();
+    assert!(update_due > due);
+    schedules::tick(&database, &agent, due + 5).await.unwrap();
+    schedules::tick(&database, &agent, due + 6).await.unwrap();
+    for _ in 0..100 {
+        if fake.lock().unwrap().servers[&Uuid::parse_str(&id).unwrap()]
+            .commands
+            .iter()
+            .any(|c| c == "say hello")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let sent = fake.lock().unwrap().servers[&Uuid::parse_str(&id).unwrap()]
+        .commands
+        .iter()
+        .filter(|c| *c == "say hello")
+        .count();
+    assert_eq!(sent, 1, "one occurrence runs once");
+    // The panel was down for the update's time: it is recorded as missed, not run late.
+    schedules::tick(&database, &agent, update_due + 3600)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(fake.lock().unwrap().updates.is_empty());
+    let listed = eventually(&app, &schedules, owner, |list| {
+        list.as_array()
+            .is_some_and(|l| l.iter().any(|s| s["last_outcome"] == "command sent"))
+    })
+    .await;
+    let missed = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["action"] == "update")
+        .unwrap();
+    assert!(
+        missed["last_outcome"]
+            .as_str()
+            .unwrap()
+            .starts_with("missed"),
+        "{missed}"
+    );
+    assert!(missed["next_run_at"].as_i64().unwrap() > update_due + 3600);
+    let activity = send(&app, "GET", &format!("{server}/activity"), owner, None)
+        .await
+        .1
+        .to_string();
+    assert!(
+        activity.contains("scheduled_command") && activity.contains("create_schedule"),
+        "{activity}"
+    );
+    let schedule_id = created["id"].as_str().unwrap();
+    let mut paused = plan("command");
+    paused["command"] = json!("say bye");
+    paused["enabled"] = json!(false);
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            &format!("{schedules}/{schedule_id}"),
+            owner,
+            Some(paused)
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    schedules::tick(&database, &agent, due + 7 * 86400 + 5)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(
+            &app,
+            "DELETE",
+            &format!("{schedules}/{schedule_id}"),
+            owner,
+            None
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(
+            &app,
+            "DELETE",
+            &format!("{schedules}/{schedule_id}"),
+            owner,
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !fake.lock().unwrap().servers[&Uuid::parse_str(&id).unwrap()]
+            .commands
+            .iter()
+            .any(|c| c == "say bye"),
+        "paused schedules do not run"
+    );
+
+    // A manual update may change versions; scheduled ones keep the installed game version.
+    assert_eq!(
+        send(&app, "POST", &format!("{server}/update"), owner, None)
+            .await
+            .0,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        fake.lock().unwrap().updates,
+        [(Uuid::parse_str(&id).unwrap(), false)]
+    );
+    eventually(&app, &server, owner, |d| {
+        d["runtime"]["operation"]["state"] == "succeeded"
+    })
+    .await;
 
     // Deletion needs the exact name, then frees the reservation and the allocation.
     let (code, body) = send(

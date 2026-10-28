@@ -7,7 +7,7 @@
   type Host = { ready: boolean; blockers: string[]; budget: Resources; reserved: Resources; remaining: Resources };
   type Allocation = { id: string; ip: string; port: number; transport: 'tcp' | 'udp' };
   type Variable = { name: string; env_variable: string; default_value: string; description: string; user_viewable: boolean; user_editable: boolean };
-  type EggDetails = { images: [string, string][]; variables: Variable[]; features: string[] };
+  type EggDetails = { name: string; startup?: string; images: [string, string][]; variables: Variable[]; features: string[] };
   type Egg = { id: string; name: string; revision: string; runtime_qualified: boolean };
 
   let { eggs, isAdmin, onCreated, onClose }: { eggs: Egg[]; isAdmin: boolean; onCreated: (message: string, id: string) => Promise<void>; onClose: () => void } = $props();
@@ -34,6 +34,10 @@
   let newTransport = $state<'tcp' | 'udp'>('tcp');
 
   const editable = $derived(details?.variables.filter(variable => variable.user_viewable && variable.user_editable) ?? []);
+  // Bedrock clients connect over UDP; Java over TCP. A mismatched address cannot be joined.
+  const wantsUdp = $derived(!!details && /bedrock/i.test(`${details.name} ${details.startup ?? ''}`));
+  const chosen = $derived(allocations.find(item => item.id === allocation));
+  const transportMismatch = $derived(!!details && !!chosen && (chosen.transport === 'udp') !== wantsUdp);
   const needsLicense = $derived(details?.features.includes('eula') ?? false);
   const canSubmit = $derived(!!host?.ready && !!name.trim() && !!details && !!image && !!allocation && (!needsLicense || licenseAccepted) && !busy);
 
@@ -127,6 +131,7 @@
         <label for="server-allocation">Address</label>
         {#if allocations.length}
           <select id="server-allocation" bind:value={allocation}>{#each allocations as item (item.id)}<option value={item.id}>{item.ip}:{item.port} ({item.transport.toUpperCase()})</option>{/each}</select>
+          {#if transportMismatch}<p class="feedback warning inline">{wantsUdp ? 'Bedrock players connect over UDP; choose a UDP address.' : 'Java players connect over TCP; choose a TCP address.'}</p>{/if}
         {:else}
           <p class="muted">No free addresses. {isAdmin ? 'Add one below.' : 'Ask your administrator to add one.'}</p>
         {/if}

@@ -47,9 +47,11 @@ pub struct Plan {
 pub fn target(game: &DetectedGame) -> Result<(Vec<&'static str>, ExtensionFolder), ModrinthError> {
     match game.loader.as_deref() {
         Some("fabric") => Ok((vec!["fabric"], ExtensionFolder::Mods)),
+        Some("forge") => Ok((vec!["forge"], ExtensionFolder::Mods)),
+        Some("neoforge") => Ok((vec!["neoforge"], ExtensionFolder::Mods)),
         Some("paper") => Ok((vec!["paper", "spigot", "bukkit"], ExtensionFolder::Plugins)),
         _ => Err(ModrinthError::Unsupported(
-            "this server has no supported mod or plugin loader; Modrinth installs are unavailable"
+            "this server has no supported mod or plugin loader (Fabric, Forge, NeoForge or Paper); Modrinth installs are unavailable"
                 .into(),
         )),
     }
@@ -263,11 +265,13 @@ impl Modrinth {
             if !valid_id(&details.id) {
                 return Err(ModrinthError::Unavailable);
             }
-            let expected_type = match folder {
-                ExtensionFolder::Mods => "mod",
-                ExtensionFolder::Plugins => "plugin",
+            // Modrinth's v2 API reports plugins as "mod" projects; the loader filter on versions
+            // decides whether a Bukkit/Paper build exists.
+            let (expected_type, accepted) = match folder {
+                ExtensionFolder::Mods => ("mod", &["mod"][..]),
+                ExtensionFolder::Plugins => ("plugin", &["mod", "plugin"][..]),
             };
-            if details.project_type != expected_type {
+            if !accepted.contains(&details.project_type.as_str()) {
                 return Err(ModrinthError::Unsupported(format!(
                     "{} is a {}, not a {expected_type}",
                     details.title, details.project_type

@@ -33,6 +33,26 @@ use uuid::Uuid;
 mod backup_operations;
 #[path = "runtime_files.rs"]
 mod file_operations;
+#[path = "runtime_update.rs"]
+mod update_operations;
+
+fn game_summary(verb: &str, game: Option<&DetectedGame>) -> String {
+    match game {
+        Some(game) if game.loader.as_deref() == Some("bedrock") => match game.version.as_str() {
+            "Bedrock" => format!("{verb} Minecraft Bedrock Edition"),
+            version => format!("{verb} Minecraft Bedrock Edition {version}"),
+        },
+        Some(game) => format!(
+            "{verb} Minecraft {}{}",
+            game.version,
+            game.loader
+                .as_ref()
+                .map(|l| format!(" with {l}"))
+                .unwrap_or_default()
+        ),
+        None => verb.into(),
+    }
+}
 
 pub const SERVER_LABEL: &str = "dev.game-manager.server";
 pub const INSTALL_LABEL: &str = "dev.game-manager.install";
@@ -802,6 +822,20 @@ impl Runtime {
         // A failed earlier attempt leaves storage behind; reinstalling starts from a clean volume.
         storage::remove_volume(&self.layout, id).await?;
         storage::create_volume(&self.layout, id, uid, spec.limits.disk_bytes).await?;
+        let pinned = self.prepare_images(id, &spec).await?;
+        let game = self.run_installer(id, &spec, uid, &pinned).await?;
+        let summary = game_summary("Installed", game.as_ref());
+        self.update(id, |record| {
+            record.installed = true;
+            record.image = Some(pinned);
+            record.game = game;
+        })
+        .await?;
+        Ok(summary)
+    }
+
+    // Downloads the runtime and installer images and pins the runtime image.
+    async fn prepare_images(&self, id: Uuid, spec: &ServerSpec) -> io::Result<String> {
         self.progress(id, "Downloading images").await;
         for image in [&spec.image, &spec.installer.container] {
             self.docker(
@@ -812,7 +846,19 @@ impl Runtime {
             .await
             .map_err(|e| io::Error::other(format!("could not download {image}: {e}")))?;
         }
-        let pinned = self.pinned_image(&spec.image).await?;
+        self.pinned_image(&spec.image).await
+    }
+
+    // Runs the egg's installer on the server's mounted volume, then gives the files to the
+    // server's UID and detects what was installed.
+    async fn run_installer(
+        &self,
+        id: Uuid,
+        spec: &ServerSpec,
+        uid: u32,
+        pinned: &str,
+    ) -> io::Result<Option<DetectedGame>> {
+        let spec = spec.clone();
         let scripts = self.layout.scripts(id);
         std::fs::create_dir_all(&scripts)?;
         {
@@ -830,12 +876,13 @@ impl Runtime {
         let plan = ContainerPlan {
             spec: &spec,
             uid,
-            image: &pinned,
+            image: pinned,
             volume: &volume,
             network: &self.config.network_name,
             egress: self.egress(),
             stop_grace_secs: self.config.stop_grace_secs,
         };
+        self.remove_container(&install_name(id)).await?;
         let name = install_name(id);
         self.docker(installer_args(&plan, &scripts), 120, 64 * 1024)
             .await?;
@@ -875,29 +922,18 @@ impl Runtime {
             .await
             .map_err(|_| io::Error::other("ownership fix-up failed"))??;
         let root = volume.clone();
+        let jar = spec
+            .variables
+            .get("SERVER_JARFILE")
+            .filter(|jar| jar.ends_with(".jar"))
+            .cloned()
+            .unwrap_or_else(|| "server.jar".into());
         let game =
-            tokio::task::spawn_blocking(move || as_server(uid, || files::detect_game(&root)))
+            tokio::task::spawn_blocking(move || as_server(uid, || files::detect_game(&root, &jar)))
                 .await
                 .map_err(|_| io::Error::other("game detection failed"))?
                 .unwrap_or(None);
-        let summary = match &game {
-            Some(game) => format!(
-                "Installed Minecraft {}{}",
-                game.version,
-                game.loader
-                    .as_ref()
-                    .map(|l| format!(" with {l}"))
-                    .unwrap_or_default()
-            ),
-            None => "Installed".into(),
-        };
-        self.update(id, |record| {
-            record.installed = true;
-            record.image = Some(pinned);
-            record.game = game;
-        })
-        .await?;
-        Ok(summary)
+        Ok(game)
     }
 
     // Resolves the image to an immutable reference so later starts run exactly what was installed.

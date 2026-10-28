@@ -248,19 +248,96 @@ fn jar_version(root: &Path, relative: &str) -> io::Result<Option<String>> {
     Ok(parsed
         .get("id")
         .and_then(|id| id.as_str())
-        .filter(|id| {
-            !id.is_empty()
-                && id.len() <= 32
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-+ ".contains(&b))
-        })
-        .map(str::to_owned))
+        .and_then(safe_version))
+}
+
+// Subdirectory names of `relative`, without creating anything or following links on the way.
+fn directories(root: &Path, relative: &str) -> io::Result<Vec<String>> {
+    let mut current = root.to_path_buf();
+    for part in relative.split('/') {
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(vec![]),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(error),
+        }
+    }
+    let mut names = Vec::new();
+    for entry in fs::read_dir(&current)?.take(1000) {
+        let entry = entry?;
+        if entry.file_type()?.is_dir()
+            && let Some(name) = entry.file_name().to_str()
+        {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn safe_version(id: &str) -> Option<String> {
+    (!id.is_empty()
+        && id.len() <= 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-+ ".contains(&b)))
+    .then(|| id.to_owned())
+}
+
+// Forge and NeoForge keep the unmodified game in libraries/net/minecraft/server/<version>[-<mcp>].
+fn library_game_version(root: &Path) -> io::Result<Option<String>> {
+    Ok(directories(root, "libraries/net/minecraft/server")?
+        .iter()
+        .filter_map(|name| safe_version(name.split('-').next().unwrap_or_default()))
+        .next_back())
+}
+
+// Paper-family jars (paperclip) carry the game's version.json or list `paper-<version>.jar`.
+fn paperclip_version(root: &Path, relative: &str) -> io::Result<Option<String>> {
+    let path = resolve(root, relative)?;
+    let file = match open_no_follow(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+        return Ok(None);
+    };
+    if !archive
+        .file_names()
+        .any(|n| n.starts_with("io/papermc/paperclip/"))
+    {
+        return Ok(None);
+    }
+    if let Ok(entry) = archive.by_name("version.json") {
+        let mut text = String::new();
+        entry.take(64 * 1024).read_to_string(&mut text)?;
+        if let Some(id) = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| {
+                v.get("id")
+                    .and_then(|id| id.as_str())
+                    .and_then(safe_version)
+            })
+        {
+            return Ok(Some(id));
+        }
+    }
+    let mut text = String::new();
+    if let Ok(entry) = archive.by_name("META-INF/versions.list") {
+        entry.take(64 * 1024).read_to_string(&mut text)?;
+    }
+    Ok(text.lines().find_map(|line| {
+        let name = line.split_whitespace().last()?.rsplit('/').next()?;
+        let version = name.strip_suffix(".jar")?.split_once('-')?.1;
+        safe_version(version)
+    }))
 }
 
 // Detects the installed Minecraft version and loader from files, not from egg variables, so a
 // "latest" choice is recorded as the version that was actually installed.
-pub fn detect_game(root: &Path) -> io::Result<Option<DetectedGame>> {
+pub fn detect_game(root: &Path, server_jar: &str) -> io::Result<Option<DetectedGame>> {
     if let Some(properties) = read_text(root, "fabric-server-launcher.properties")? {
         let jar = properties
             .lines()
@@ -276,12 +353,48 @@ pub fn detect_game(root: &Path) -> io::Result<Option<DetectedGame>> {
         }
         return Ok(None);
     }
-    Ok(
-        jar_version(root, "server.jar")?.map(|version| DetectedGame {
+    for (folder, loader) in [
+        ("libraries/net/neoforged/neoforge", "neoforge"),
+        ("libraries/net/neoforged/forge", "neoforge"),
+        ("libraries/net/minecraftforge/forge", "forge"),
+    ] {
+        if !directories(root, folder)?.is_empty() {
+            return Ok(library_game_version(root)?.map(|version| DetectedGame {
+                version,
+                loader: Some(loader.into()),
+            }));
+        }
+    }
+    if let Ok(meta) = fs::symlink_metadata(root.join("bedrock_server"))
+        && meta.is_file()
+    {
+        return Ok(Some(DetectedGame {
+            version: bedrock_version(root)?.unwrap_or_else(|| "Bedrock".into()),
+            loader: Some("bedrock".into()),
+        }));
+    }
+    if let Some(version) = paperclip_version(root, server_jar)? {
+        return Ok(Some(DetectedGame {
             version,
-            loader: None,
-        }),
-    )
+            loader: Some("paper".into()),
+        }));
+    }
+    Ok(jar_version(root, server_jar)?.map(|version| DetectedGame {
+        version,
+        loader: None,
+    }))
+}
+
+// Bedrock packages do not carry a version file; the release notes start with the version.
+fn bedrock_version(root: &Path) -> io::Result<Option<String>> {
+    let text = match read_text(root, "release-notes.txt") {
+        Ok(text) => text.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+    Ok(text
+        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .find(|part| part.matches('.').count() >= 2 && part.starts_with('1'))
+        .and_then(safe_version))
 }
 
 // Gives every file the installer created to the server's UID without following links or

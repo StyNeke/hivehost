@@ -9,3 +9,4 @@ uuid.workspace = true
 serde.workspace = true
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
+jiff = "0.2"

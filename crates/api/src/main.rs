@@ -52,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Installs and deletions are durable jobs; the worker resumes them after a restart.
     if let Some(agent) = agent.clone() {
+        tokio::spawn(manager_api::schedules::run(database.clone(), agent.clone()));
         tokio::spawn(manager_api::worker::run(database.clone(), agent));
     }
     let backup_root = PathBuf::from(

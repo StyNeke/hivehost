@@ -121,7 +121,7 @@ impl Runtime {
         }
     }
 
-    async fn begin(
+    pub(super) async fn begin(
         &self,
         id: Uuid,
         kind: OperationKind,
@@ -235,7 +235,7 @@ impl Runtime {
         Ok(())
     }
 
-    async fn run_backup(
+    pub(super) async fn run_backup(
         &self,
         id: Uuid,
         kind: BackupKind,
@@ -329,7 +329,7 @@ impl Runtime {
         let existing = self.backups_of(id)?;
         let (keep_kind, limit) = match (kind, retention) {
             (BackupKind::Manual, Some(limit)) => (BackupKind::Manual, limit as usize),
-            _ => (BackupKind::PreRestore, 1),
+            (kind, _) => (kind, 1),
         };
         for old in existing.iter().filter(|b| b.kind == keep_kind).skip(limit) {
             self.remove_backup_files(id, old.id)?;
@@ -410,6 +410,16 @@ impl Runtime {
                 ))
             })?;
         self.progress(id, "Restoring").await;
+        self.restore_files(id, &archive).await?;
+        Ok("Backup restored; the previous data was saved as a pre-restore backup".into())
+    }
+
+    // Replaces the server's files with an archive's contents through a staging directory.
+    pub(super) async fn restore_files(
+        &self,
+        id: Uuid,
+        archive: &std::path::Path,
+    ) -> io::Result<()> {
         let uid = self
             .records
             .lock()
@@ -419,7 +429,7 @@ impl Runtime {
             .ok_or_else(|| io::Error::other("server vanished"))?;
         storage::ensure_mounted(&self.layout, id).await?;
         let volume = self.layout.volume(id);
-        let input = std::fs::File::open(&archive)?;
+        let input = std::fs::File::open(archive)?;
         tokio::task::spawn_blocking(move || {
             as_server(uid, || {
                 backups::clean_restore_leftovers(&volume)?;
@@ -437,8 +447,11 @@ impl Runtime {
             })
         })
         .await
-        .map_err(|_| io::Error::other("restore task failed"))??;
-        Ok("Backup restored; the previous data was saved as a pre-restore backup".into())
+        .map_err(|_| io::Error::other("restore task failed"))?
+    }
+
+    pub(super) fn backup_path(&self, id: Uuid, backup: Uuid) -> PathBuf {
+        self.backup_dir(id).join(format!("{backup}.tar.gz"))
     }
 
     pub(super) fn remove_all_backups(&self, id: Uuid) -> io::Result<()> {

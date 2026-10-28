@@ -435,6 +435,19 @@ pub fn router_with_services(
         )
         .route("/api/users", get(server_routes::settings::people))
         .route(
+            "/api/servers/{id}/schedules",
+            get(server_routes::settings::schedules).post(server_routes::settings::create_schedule),
+        )
+        .route(
+            "/api/servers/{id}/schedules/{schedule}",
+            axum::routing::put(server_routes::settings::update_schedule)
+                .delete(server_routes::settings::delete_schedule),
+        )
+        .route(
+            "/api/servers/{id}/update",
+            post(server_routes::settings::update_server),
+        )
+        .route(
             "/api/servers/{id}/members/{user_id}",
             axum::routing::put(set_member),
         )

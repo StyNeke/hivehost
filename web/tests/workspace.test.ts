@@ -10,7 +10,7 @@ const detail = (power: string, desired: boolean, extra: Record<string, unknown> 
   runtime: { installed: true, operation: null, power, desired_running: desired, problem: null, started_at: null, exit_code: null, game: { version: '26.3', loader: 'fabric' }, disk_used_bytes: GIB, disk_total_bytes: 4 * GIB, ...extra },
 });
 
-function mock(state: { detail: unknown; console?: string[]; members?: unknown[] }) {
+function mock(state: { detail: unknown; console?: string[]; members?: unknown[]; schedules?: any[] }) {
   const calls: { path: string; method: string; body: any }[] = [];
   const fetchMock = vi.fn(async (path: string, options?: RequestInit) => {
     const method = options?.method ?? 'GET';
@@ -24,6 +24,8 @@ function mock(state: { detail: unknown; console?: string[]; members?: unknown[] 
     if (path === '/api/servers/s1/settings' && method === 'PUT') return Response.json({ changed: ['image', 'MC_VERSION'] });
     if (path === '/api/servers/s1/limits' && method === 'PUT') return Response.json(JSON.parse(String(options!.body)));
     if (path === '/api/servers/s1/members') return Response.json(state.members ?? []);
+    if (path === '/api/servers/s1/schedules' && method === 'GET') return Response.json(state.schedules ?? []);
+    if (path === '/api/servers/s1/schedules' && method === 'POST') { const body = JSON.parse(String(options!.body)); state.schedules = [...(state.schedules ?? []), { ...body, id: 'sch-1', next_run_at: 1793170000, last_run_at: null, last_outcome: null }]; return Response.json(state.schedules!.at(-1), { status: 201 }); }
     if (path === '/api/users') return Response.json([{ id: 'u-owner', username: 'owner' }, { id: 'u-ana', username: 'ana' }, { id: 'u-bo', username: 'bo' }]);
     if (method !== 'GET') return new Response(null, { status: path.endsWith('/console') ? 204 : 202 });
     throw new Error(`Unexpected request: ${method} ${path}`);
@@ -188,4 +190,29 @@ test('members can be given and removed access; the owner is not offered', async 
   await waitFor(() => expect(calls.filter(c => c.method === 'PUT' && c.path.startsWith('/api/servers/s1/members/')).map(c => [c.path, c.body.enabled])).toEqual([
     ['/api/servers/s1/members/u-ana', true], ['/api/servers/s1/members/u-bo', false],
   ]));
+});
+
+test('a scheduled console command is created with its days, time and zone', async () => {
+  const state: { detail: unknown; schedules: any[] } = { detail: detail('running', true), schedules: [] };
+  const calls = mock(state);
+  render(ServerWorkspace, { serverId: 's1', onBack: () => {}, onDeleted: () => {} });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('tab', { name: /Schedules/ }));
+  await screen.findByText('No schedules yet.');
+  await user.click(screen.getByRole('button', { name: 'New schedule' }));
+  await user.selectOptions(screen.getByLabelText('Action'), 'command');
+  await user.type(screen.getByLabelText('Console command'), 'say Restarting in 5 minutes');
+  const time = screen.getByLabelText('Time') as HTMLInputElement;
+  time.value = '03:55';
+  time.dispatchEvent(new Event('change', { bubbles: true }));
+  for (const day of ['Sat', 'Sun']) await user.click(screen.getByLabelText(day));
+  const zone = screen.getByLabelText('Time zone');
+  await user.clear(zone);
+  await user.type(zone, 'Europe/Amsterdam');
+  await user.click(screen.getByRole('button', { name: 'Save schedule' }));
+  await screen.findByText(/Run command: say Restarting in 5 minutes/);
+  expect(screen.getByText(/Weekdays at 03:55 \(Europe\/Amsterdam\)/)).toBeTruthy();
+  expect(calls.find(c => c.method === 'POST' && c.path === '/api/servers/s1/schedules')!.body).toEqual({
+    action: 'command', command: 'say Restarting in 5 minutes', hour: 3, minute: 55, weekdays: 31, timezone: 'Europe/Amsterdam', enabled: true,
+  });
 });

@@ -8,5 +8,6 @@ pub mod jobs;
 pub mod modrinth;
 pub mod provisioning;
 pub mod runtime;
+pub mod schedules;
 pub mod servers;
 pub mod worker;

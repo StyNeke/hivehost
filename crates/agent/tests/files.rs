@@ -162,12 +162,12 @@ fn jar(path: &std::path::Path, version_json: Option<&str>) {
 fn installed_game_is_detected_from_files_not_from_variables() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    assert_eq!(detect_game(root).unwrap(), None);
+    assert_eq!(detect_game(root, "server.jar").unwrap(), None);
     jar(
         &root.join("server.jar"),
         Some(r#"{"id":"1.21.4","name":"1.21.4"}"#),
     );
-    let vanilla = detect_game(root).unwrap().unwrap();
+    let vanilla = detect_game(root, "server.jar").unwrap().unwrap();
     assert_eq!((vanilla.version.as_str(), vanilla.loader), ("1.21.4", None));
     fs::write(
         root.join("fabric-server-launcher.properties"),
@@ -178,20 +178,141 @@ fn installed_game_is_detected_from_files_not_from_variables() {
         &root.join("minecraft-server.jar"),
         Some(r#"{"id":"1.21.10"}"#),
     );
-    let fabric = detect_game(root).unwrap().unwrap();
+    let fabric = detect_game(root, "server.jar").unwrap().unwrap();
     assert_eq!(fabric.version, "1.21.10");
     assert_eq!(fabric.loader.as_deref(), Some("fabric"));
     jar(
         &root.join("minecraft-server.jar"),
         Some(r#"{"id":"1.21\n<script>"}"#),
     );
-    assert_eq!(detect_game(root).unwrap(), None);
+    assert_eq!(detect_game(root, "server.jar").unwrap(), None);
     fs::write(
         root.join("fabric-server-launcher.properties"),
         "serverJar=../../etc/passwd\n",
     )
     .unwrap();
-    assert!(detect_game(root).is_err());
+    assert!(detect_game(root, "server.jar").is_err());
+}
+
+fn zip_with(path: &std::path::Path, entries: &[(&str, &str)]) {
+    let mut writer = zip::ZipWriter::new(fs::File::create(path).unwrap());
+    for (name, text) in entries {
+        writer
+            .start_file(*name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(text.as_bytes()).unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+#[test]
+fn paper_forge_neoforge_and_bedrock_installs_are_recognised() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // Paper's launcher jar under the configured name; versions.list is the fallback.
+    zip_with(
+        &root.join("paper.jar"),
+        &[
+            ("io/papermc/paperclip/Main.class", ""),
+            (
+                "META-INF/versions.list",
+                "abc\t1.21.10-R0.1-SNAPSHOT\tpaper-1.21.10.jar\n",
+            ),
+        ],
+    );
+    let paper = detect_game(root, "paper.jar").unwrap().unwrap();
+    assert_eq!(
+        (paper.version.as_str(), paper.loader.as_deref()),
+        ("1.21.10", Some("paper"))
+    );
+    zip_with(
+        &root.join("paper.jar"),
+        &[
+            ("io/papermc/paperclip/Main.class", ""),
+            ("version.json", r#"{"id":"26.3"}"#),
+        ],
+    );
+    assert_eq!(
+        detect_game(root, "paper.jar").unwrap().unwrap().version,
+        "26.3"
+    );
+    // A plain server jar is vanilla.
+    assert_eq!(detect_game(root, "missing.jar").unwrap(), None);
+    assert!(
+        !root.join("libraries").exists(),
+        "detection must not create folders"
+    );
+
+    let forge = tempfile::tempdir().unwrap();
+    fs::create_dir_all(
+        forge
+            .path()
+            .join("libraries/net/minecraftforge/forge/1.21.1-52.0.16"),
+    )
+    .unwrap();
+    fs::create_dir_all(
+        forge
+            .path()
+            .join("libraries/net/minecraft/server/1.21.1-20240808.144430"),
+    )
+    .unwrap();
+    let detected = detect_game(forge.path(), "server.jar").unwrap().unwrap();
+    assert_eq!(
+        (detected.version.as_str(), detected.loader.as_deref()),
+        ("1.21.1", Some("forge"))
+    );
+
+    let neoforge = tempfile::tempdir().unwrap();
+    fs::create_dir_all(
+        neoforge
+            .path()
+            .join("libraries/net/neoforged/neoforge/21.1.77"),
+    )
+    .unwrap();
+    assert_eq!(
+        detect_game(neoforge.path(), "server.jar").unwrap(),
+        None,
+        "no game library yet"
+    );
+    fs::create_dir_all(
+        neoforge
+            .path()
+            .join("libraries/net/minecraft/server/1.21.1"),
+    )
+    .unwrap();
+    let detected = detect_game(neoforge.path(), "server.jar").unwrap().unwrap();
+    assert_eq!(
+        (detected.version.as_str(), detected.loader.as_deref()),
+        ("1.21.1", Some("neoforge"))
+    );
+    // A linked libraries folder is not followed.
+    let linked = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(
+        neoforge.path().join("libraries"),
+        linked.path().join("libraries"),
+    )
+    .unwrap();
+    assert_eq!(detect_game(linked.path(), "server.jar").unwrap(), None);
+
+    let bedrock = tempfile::tempdir().unwrap();
+    fs::write(bedrock.path().join("bedrock_server"), b"\x7fELF").unwrap();
+    let detected = detect_game(bedrock.path(), "server.jar").unwrap().unwrap();
+    assert_eq!(
+        (detected.version.as_str(), detected.loader.as_deref()),
+        ("Bedrock", Some("bedrock"))
+    );
+    fs::write(
+        bedrock.path().join("release-notes.txt"),
+        "Version 1.21.111.1\nNotes",
+    )
+    .unwrap();
+    assert_eq!(
+        detect_game(bedrock.path(), "server.jar")
+            .unwrap()
+            .unwrap()
+            .version,
+        "1.21.111.1"
+    );
 }
 
 #[test]

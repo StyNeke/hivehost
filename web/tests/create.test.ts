@@ -19,7 +19,7 @@ const egg = {
   ],
 };
 
-function mockApi(hostResponse: () => Response, onCreate?: (body: any) => Response) {
+function mockApi(hostResponse: () => Response, onCreate?: (body: any) => Response, details: Record<string, unknown> = egg) {
   const fetchMock = vi.fn(async (path: string, options?: RequestInit) => {
     if (path === '/api/session') return Response.json({ id: 'member', is_admin: false });
     if (path === '/api/servers' && options?.method === 'POST') return onCreate!(JSON.parse(String(options.body)));
@@ -27,7 +27,7 @@ function mockApi(hostResponse: () => Response, onCreate?: (body: any) => Respons
     if (path === '/api/eggs') return Response.json([{ id: 'egg', name: 'Paper', revision: 'rev-1', runtime_qualified: true }]);
     if (path === '/api/host') return hostResponse();
     if (path === '/api/allocations') return Response.json([{ id: 'alloc-1', ip: '100.116.183.201', port: 25600, transport: 'tcp' }]);
-    if (path === '/api/eggs/revisions/rev-1') return Response.json(egg);
+    if (path === '/api/eggs/revisions/rev-1') return Response.json(details);
     throw new Error(`Unexpected request: ${path}`);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -90,4 +90,14 @@ test('a ready host creates a server with the chosen egg, allocation and limits',
   });
   await screen.findByText(/Installation has started/i);
   expect(fetchMock.mock.calls.filter(([path, options]) => path === '/api/servers' && !options?.method).length).toBeGreaterThan(1);
+});
+
+test('a Bedrock egg on a TCP address is flagged before creation', async () => {
+  mockApi(() => Response.json(host(true)), undefined, { ...egg, name: 'Vanilla Bedrock', startup: './bedrock_server', features: [] });
+  render(App);
+  const user = userEvent.setup();
+  await user.click((await screen.findAllByRole('button', { name: /Add server/ }))[0]);
+  const panel = await screen.findByRole('region', { name: 'New server' });
+  await user.selectOptions(await within(panel).findByLabelText('Game'), 'rev-1');
+  await within(panel).findByText(/Bedrock players connect over UDP/);
 });

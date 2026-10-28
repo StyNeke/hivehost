@@ -114,6 +114,10 @@ async fn runtime_operation(
         | Operation::RenamePath { .. }
         | Operation::DeletePath { .. }) => runtime.file_operation(operation).await,
         Operation::UsageAll => runtime.usage_all().await,
+        Operation::UpdateServer {
+            spec,
+            keep_game_version,
+        } => runtime.update_server(*spec, keep_game_version).await,
         Operation::Ping | Operation::InspectHost => AgentResult::Unavailable,
     }
 }
