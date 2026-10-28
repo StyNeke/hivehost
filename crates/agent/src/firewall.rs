@@ -27,6 +27,19 @@ pub struct Isolation {
     pub gateway_tcp_ports: Vec<u16>,
 }
 
+// Docker's default gateway for a subnet: its first host address. Older Docker releases leave the
+// IPAM gateway field empty for networks created with only a subnet, so the agent derives it.
+pub fn default_gateway(subnet: &str) -> Option<Ipv4Addr> {
+    let (address, prefix) = subnet.split_once('/')?;
+    let address: Ipv4Addr = address.parse().ok()?;
+    let prefix: u32 = prefix.parse().ok()?;
+    if !(1..=30).contains(&prefix) {
+        return None;
+    }
+    let mask = u32::MAX << (32 - prefix);
+    Some(Ipv4Addr::from((u32::from(address) & mask) + 1))
+}
+
 fn args(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|p| p.to_string()).collect()
 }

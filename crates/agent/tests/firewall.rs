@@ -1,6 +1,8 @@
 #![cfg(target_os = "linux")]
 
-use manager_agent::firewall::{FORWARD_CHAIN, INPUT_CHAIN, Isolation, chain_rules, jumps};
+use manager_agent::firewall::{
+    FORWARD_CHAIN, INPUT_CHAIN, Isolation, chain_rules, default_gateway, jumps,
+};
 
 #[test]
 fn containers_reach_only_the_proxy_on_the_host_and_no_private_networks() {
@@ -77,4 +79,23 @@ fn containers_reach_only_the_proxy_on_the_host_and_no_private_networks() {
             .iter()
             .any(|r| r.contains(&"--dport".to_string()))
     );
+}
+
+#[test]
+fn the_gateway_is_derived_when_docker_does_not_report_it() {
+    assert_eq!(
+        default_gateway("172.30.250.0/24"),
+        Some("172.30.250.1".parse().unwrap())
+    );
+    assert_eq!(
+        default_gateway("10.20.0.0/16"),
+        Some("10.20.0.1".parse().unwrap())
+    );
+    assert_eq!(
+        default_gateway("10.20.5.7/16"),
+        Some("10.20.0.1".parse().unwrap())
+    );
+    for bad in ["", "172.30.250.0", "172.30.250.0/32", "fd00::/64", "x/24"] {
+        assert_eq!(default_gateway(bad), None, "{bad}");
+    }
 }

@@ -652,7 +652,7 @@ impl Runtime {
                     "network".into(),
                     "inspect".into(),
                     "--format".into(),
-                    "{{(index .IPAM.Config 0).Gateway}}".into(),
+                    "{{(index .IPAM.Config 0).Gateway}} {{(index .IPAM.Config 0).Subnet}}".into(),
                     "--".into(),
                     self.config.network_name.clone().into(),
                 ],
@@ -660,10 +660,15 @@ impl Runtime {
                 64 * 1024,
             )
             .await?;
-        let gateway: std::net::Ipv4Addr = String::from_utf8_lossy(&gateway)
-            .trim()
-            .parse()
-            .map_err(|_| io::Error::other("managed network has no IPv4 gateway"))?;
+        let text = String::from_utf8_lossy(&gateway);
+        let mut fields = text.split_whitespace();
+        let (first, second) = (fields.next(), fields.next());
+        let gateway: std::net::Ipv4Addr = match (first, second) {
+            (Some(gateway), Some(_)) => gateway.parse().ok(),
+            (Some(subnet), None) => crate::firewall::default_gateway(subnet),
+            _ => None,
+        }
+        .ok_or_else(|| io::Error::other("managed network has no IPv4 gateway"))?;
         let gateway_tcp_ports = self
             .config
             .container_proxy
@@ -700,6 +705,11 @@ impl Runtime {
                 "bridge".into(),
                 "--subnet".into(),
                 self.config.network_subnet.clone().into(),
+                "--gateway".into(),
+                crate::firewall::default_gateway(&self.config.network_subnet)
+                    .ok_or_else(|| io::Error::other("GM_NETWORK_SUBNET must be an IPv4 subnet"))?
+                    .to_string()
+                    .into(),
                 "--opt".into(),
                 "com.docker.network.bridge.enable_icc=false".into(),
                 "--label".into(),

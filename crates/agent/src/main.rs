@@ -64,6 +64,9 @@ fn config_from_env() -> Result<manager_agent::host::AgentConfig, Box<dyn std::er
         }
     }
     if let Ok(subnet) = env::var("GM_NETWORK_SUBNET") {
+        if manager_agent::firewall::default_gateway(&subnet).is_none() {
+            return Err("GM_NETWORK_SUBNET must be an IPv4 subnet such as 172.30.250.0/24".into());
+        }
         config.network_subnet = subnet;
     }
     match env::var("GM_NETWORK_ISOLATION").as_deref() {
