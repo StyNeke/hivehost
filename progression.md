@@ -63,10 +63,40 @@ NOPASSWD sudo drop-in the user created (`/etc/sudoers.d/90-claude-temp`; remove 
 9. **Checks on the final tree:** Linux (Rust 1.99.0 as pinned) `cargo test --workspace` 98 passed,
    0 failed, 3 ignored; fmt and clippy clean; web 15 tests, svelte-check 0/0, build OK.
 
-**Next (waiting on the user):** create the administrator with `init-admin` (hidden prompt), trust
-the CA on their devices, lower the Pterodactyl memory, then the acceptance runs. The Bedrock
-client test needs `bedrock-protocol`, whose install (it pulls a pinned git dependency) was refused
-by the session's permission check; the user has to allow it.
+10. **Legacy memory lowered (user: "do it yourself")** for the three *stopped* servers through
+    Pterodactyl's own `BuildModificationService` (`php artisan tinker` as `www-data`, passing the
+    unchanged database/allocation/backup limits, which that service otherwise resets to 0).
+    Before: Minecraft Survival (id 15, `2e83460d`) 15000, Create Mod (16, `57d8f102`) 8000, Paper
+    Test (18, `b556a801`) 4000 MiB; all `cpu 0, swap 0, io 500, oom_disabled true`, limits 0.
+    After: 2800 / 3800 / 1800 MiB. Wings logged "performing server limit modification on-the-fly"
+    and the containers now have 3,229,614,080 / 4,383,047,680 / 2,170,552,320 bytes. Rollback:
+    the same call with the old values.
+    **Create Public (id 24, `94125d3b`, running) is deliberately unchanged:** Wings applies a panel
+    change to a running container immediately, but its JVM fixed its maximum heap at start
+    (`MaxRAMPercentage=95` of 20.5 GiB), so a live drop to ~6 GiB risks an OOM kill mid-game. It
+    needs stop → set 5800 MiB → start in a window the user picks. Until then the legacy RAM
+    reservation (~29.6 GiB) still exceeds the 19.35 GiB budget and creation stays blocked.
+11. **Isolation verified on the host:** a disposable `node:20-trixie-slim` container
+    (`--cap-drop ALL --read-only`) on `gm-games` could not open TCP to the gateway's SSH, nginx
+    8085, CasaOS 80, Wings 8080, Samba 445, the LAN address (8085, 22), the Meshnet address (8443,
+    22), the legacy game container `172.18.0.2:25567` or the router — all timed out — while
+    `api.modrinth.com`, `api.github.com` and `piston-meta.mojang.com` answered over HTTPS. The
+    same probe on Docker's default bridge reached all the host services (control). Counters:
+    `GM-ISOLATE-IN` dropped 31 packets, `GM-ISOLATE-FWD` 3 to 192.168.0.0/16. Observation, not
+    changed: legacy containers on `pterodactyl_nw`/`bridge` can reach the host's SSH, Wings,
+    nginx and Samba ports.
+12. **Outbound from the API user:** `api.github.com` (Pumpkin, SteelMC repos) and Modrinth answer
+    200; anonymous GitHub limit 60/h for this IP, enough for the hourly cache.
+
+**Next (waiting on the user):**
+- Create the administrator: `init-admin` reads the password from a hidden prompt, and Claude may
+  not choose or type account passwords.
+- Trust the CA on their devices (installing a root certificate is a security setting the user
+  makes).
+- A restart window for Create Public, to apply 5800 MiB.
+- The Bedrock client test needs `bedrock-protocol`, whose install (it pulls a pinned git
+  dependency from PrismarineJS) the session's permission check refused twice; the user has to
+  allow or run it.
 
 ## Read this first
 
