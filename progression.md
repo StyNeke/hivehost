@@ -182,6 +182,7 @@ Goal session continued, 2026-10-28 (same Ubuntu 24.04 container with Docker 29.9
   - SteelMC needed `^C` (SIGINT) to stop, because its console needs a terminal.
 - **Network isolation:** before the rules, a container reached a host service on the bridge gateway; after, it could not, while the egress proxy and a full Vanilla install kept working.
 - **Import:** a Pterodactyl-style archive (`./` entries, files owned by UID 988) was imported, verified and restored into a new Fabric server. The existing world loaded (`Done (1.281s)`) with Carpet, and an invalid upload was refused with 422.
+- **Final acceptance on the last build:** `tests/host/fabric-carpet-acceptance.cjs` passed again through the browser. Carpet was installed from Modrinth and three bots joined (`There are 3 of a max of 20 players online`). Its first attempt hit a transient download failure inside the upstream Fabric install script. That script exits 0 anyway, so an install with no recognisable game now reports the installer's last output instead of a plain "Installed" (updates do the same before rolling back).
 - **Real client:** mineflayer 4.39 (protocol for 26.1) joined a Vanilla 26.1 server through the published port, spawned, chatted and was logged by the server.
 - **Bedrock client: not verified.**
   - Bedrock 1.26.60 defaults to `transport=nethernet`, which opens one dual-stack IPv6 socket. `transport=raknet` also needs IPv6 (port 19133).

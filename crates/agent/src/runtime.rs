@@ -874,8 +874,15 @@ impl Runtime {
         storage::remove_volume(&self.layout, id).await?;
         storage::create_volume(&self.layout, id, uid, spec.limits.disk_bytes).await?;
         let pinned = self.prepare_images(id, &spec).await?;
-        let game = self.run_installer(id, &spec, uid, &pinned).await?;
-        let summary = game_summary("Installed", game.as_ref());
+        let (game, output) = self.run_installer(id, &spec, uid, &pinned).await?;
+        let summary = match &game {
+            Some(_) => game_summary("Installed", game.as_ref()),
+            // Some upstream install scripts exit successfully after a failed download; keep the
+            // reason visible instead of reporting a plain success.
+            None => format!(
+                "Installed, but no known game was recognised in the files. That is expected for experimental servers; otherwise the installer probably failed. Its last output:\n{output}"
+            ),
+        };
         self.update(id, |record| {
             record.installed = true;
             record.image = Some(pinned);
@@ -901,14 +908,14 @@ impl Runtime {
     }
 
     // Runs the egg's installer on the server's mounted volume, then gives the files to the
-    // server's UID and detects what was installed.
+    // server's UID and detects what was installed. Returns that and the installer's last output.
     async fn run_installer(
         &self,
         id: Uuid,
         spec: &ServerSpec,
         uid: u32,
         pinned: &str,
-    ) -> io::Result<Option<DetectedGame>> {
+    ) -> io::Result<(Option<DetectedGame>, String)> {
         let spec = spec.clone();
         let scripts = self.layout.scripts(id);
         std::fs::create_dir_all(&scripts)?;
@@ -953,26 +960,27 @@ impl Runtime {
                 .await
                 .map_err(|e| io::Error::other(format!("installer did not finish: {e}")))?;
             let code: i64 = String::from_utf8_lossy(&code).trim().parse().unwrap_or(-1);
+            let lines = engine::logs(&self.config.docker_socket, &name, "tail=25", 1024 * 1024)
+                .await
+                .map(|bytes| engine::console_lines(&bytes).join("\n"))
+                .unwrap_or_default();
             if code != 0 {
-                let lines = engine::logs(&self.config.docker_socket, &name, "tail=25", 1024 * 1024)
-                    .await
-                    .map(|bytes| engine::console_lines(&bytes).join("\n"))
-                    .unwrap_or_default();
                 return Err(io::Error::other(format!(
                     "installer exited with code {code}. Last output:\n{lines}"
                 )));
             }
-            Ok(())
+            Ok(lines)
         }
         .await;
         let _ = self.remove_container(&name).await;
-        result?;
+        let installer_output = result?;
         self.progress(id, "Finishing installation").await;
         let root = volume.clone();
         tokio::task::spawn_blocking(move || files::chown_tree(&root, uid))
             .await
             .map_err(|_| io::Error::other("ownership fix-up failed"))??;
-        self.detect_installed(id, &spec, uid).await
+        let game = self.detect_installed(id, &spec, uid).await?;
+        Ok((game, installer_output))
     }
 
     // What the server's files contain now (game version and loader), read as the server's UID.

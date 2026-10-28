@@ -88,14 +88,18 @@ impl Runtime {
         storage::ensure_mounted(&self.layout, id).await?;
         storage::grow_volume(&self.layout, id, spec.limits.disk_bytes).await?;
         let installed = self.run_installer(id, &spec, uid, &pinned).await;
+        let output = installed
+            .as_ref()
+            .map(|(_, output)| output.clone())
+            .unwrap_or_default();
+        let installed = installed.map(|(game, _)| game);
         let failure = match (&installed, &previous) {
             (Err(error), _) => Some(format!("The update failed: {error}")),
             // Installers can exit successfully yet leave no game behind (for example an unknown
             // version); keeping that would leave a server that cannot start.
-            (Ok(None), Some(_)) => Some(
-                "The update finished but no game could be found in the files afterwards (check the version in Settings)"
-                    .to_string(),
-            ),
+            (Ok(None), Some(_)) => Some(format!(
+                "The update finished but no game could be found in the files afterwards (check the version in Settings). The installer's last output:\n{output}"
+            )),
             (Ok(Some(after)), Some(before))
                 if keep_game_version && before.version != after.version =>
             {
