@@ -183,6 +183,34 @@ pub fn configured_local_ips(input: &[u8], configured: &[IpAddr]) -> io::Result<V
         .collect())
 }
 
+// At boot a VPN interface (for example NordVPN's nordlynx) can get its address well after the
+// agent starts, and publishing a game port on a missing address fails. Waits until every
+// configured private IP is present, up to `timeout`; returns whether they all appeared.
+#[cfg(target_os = "linux")]
+pub async fn wait_for_private_ips(configured: &[IpAddr], timeout: std::time::Duration) -> bool {
+    let wanted = configured
+        .iter()
+        .filter(|ip| manager_core::host::private_allocation_ip(**ip))
+        .count();
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let present = crate::commands::run_checked(
+            std::path::Path::new("ip"),
+            &["-j", "address", "show"].map(std::ffi::OsString::from),
+            std::time::Duration::from_secs(5),
+            64 * 1024,
+        )
+        .await
+        .ok()
+        .and_then(|output| configured_local_ips(&output, configured).ok())
+        .is_some_and(|found| found.len() == wanted);
+        if present || tokio::time::Instant::now() >= deadline {
+            return present;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
 // `owned` lists this agent's server IDs and `owned_image_bytes` the space their storage images
 // already hold; both come from the agent's registry, never from container metadata alone.
 pub async fn inspect_host(
@@ -245,7 +273,7 @@ pub async fn inspect_host(
                 4096
             ),
             run_checked(Path::new("ip"), &ip_args, Duration::from_secs(5), 64 * 1024),
-            inspect_inventory(&docker_config, &owned_ids, memory, cpu),
+            inspect_inventory(&docker_config, &owned_ids, memory),
         )?;
         let (disk_total_bytes, disk_available_bytes) =
             parse_disk_space(std::str::from_utf8(&disk).map_err(|_| invalid())?)?;

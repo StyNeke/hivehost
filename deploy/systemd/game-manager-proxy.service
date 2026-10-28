@@ -1,0 +1,22 @@
+# Private HTTPS proxy for the web API: a separate nginx instance (no change to any existing
+# nginx). It binds to the private VPN address, which may only appear some seconds after boot,
+# so it keeps retrying instead of failing once.
+[Unit]
+Description=Game manager private HTTPS proxy
+Documentation=file:///usr/local/share/game-manager/docs/deployment.md
+Wants=network-online.target game-manager-api.service
+After=network-online.target game-manager-api.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=/usr/sbin/nginx -t -q -c /etc/game-manager/nginx.conf
+ExecStart=/usr/sbin/nginx -c /etc/game-manager/nginx.conf -g "daemon off;"
+ExecReload=/bin/kill -HUP $MAINPID
+RuntimeDirectory=game-manager-proxy
+CacheDirectory=game-manager-proxy
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

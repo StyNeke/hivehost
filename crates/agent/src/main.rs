@@ -114,6 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         data_root: config.data_root.clone(),
     })?;
     config.api_gid = Some(manager_agent::linux::primary_gid(api_uid)?);
+    let private_ips = config.private_ips.clone();
     let runtime = Arc::new(Runtime::new(config));
     runtime.load().await?;
     runtime.ensure_network().await.map_err(|error| {
@@ -127,6 +128,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let runtime = runtime.clone();
         tokio::spawn(async move {
+            if !manager_agent::host::wait_for_private_ips(&private_ips, Duration::from_secs(300))
+                .await
+            {
+                eprintln!("configured private IPs are still missing; restoring servers anyway");
+            }
             runtime.restore().await;
             loop {
                 runtime.supervise_once().await;

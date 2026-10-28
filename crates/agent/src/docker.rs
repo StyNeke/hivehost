@@ -47,7 +47,6 @@ pub fn parse_inventory(
     bytes: &[u8],
     owned_ids: &HashSet<String>,
     physical_memory: u64,
-    physical_cpu: u32,
 ) -> io::Result<Inventory> {
     let mut legacy_reserved = Resources {
         memory_bytes: 0,
@@ -84,7 +83,9 @@ pub fn parse_inventory(
                     .ok_or_else(invalid)?
                     .div_ceil(container.cpu_period as u64)
             } else {
-                physical_cpu as u64
+                // Uncapped CPU is shared rather than reserved: overload slows games down but,
+                // unlike memory, never kills them. Explicit legacy quotas still count.
+                0
             };
             legacy_reserved.memory_bytes = legacy_reserved
                 .memory_bytes
@@ -142,7 +143,6 @@ pub async fn inspect_inventory(
     config_dir: &Path,
     owned_ids: &HashSet<String>,
     physical_memory: u64,
-    physical_cpu: u32,
 ) -> io::Result<Inventory> {
     let prefix = [
         OsString::from("--host"),
@@ -165,7 +165,7 @@ pub async fn inspect_inventory(
         return Err(invalid());
     }
     if ids.is_empty() {
-        return parse_inventory(b"", owned_ids, physical_memory, physical_cpu);
+        return parse_inventory(b"", owned_ids, physical_memory);
     }
     const FORMAT: &str = r#"{"id":{{json .Id}},"memory_bytes":{{json .HostConfig.Memory}},"nano_cpus":{{json .HostConfig.NanoCpus}},"cpu_quota":{{json .HostConfig.CpuQuota}},"cpu_period":{{json .HostConfig.CpuPeriod}},"configured_ports":{{json .HostConfig.PortBindings}},"active_ports":{{json .NetworkSettings.Ports}}}"#;
     let mut arguments = prefix.to_vec();
@@ -178,7 +178,7 @@ pub async fn inspect_inventory(
         1024 * 1024,
     )
     .await?;
-    let inventory = parse_inventory(&inspected, owned_ids, physical_memory, physical_cpu)?;
+    let inventory = parse_inventory(&inspected, owned_ids, physical_memory)?;
     if inventory.container_ids != ids.into_iter().map(str::to_owned).collect() {
         return Err(invalid());
     }
