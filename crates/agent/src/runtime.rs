@@ -1758,19 +1758,41 @@ impl Runtime {
                 continue;
             }
             let code = state.exit_code.unwrap_or(-1);
+            let cause = match engine::logs(
+                &self.config.docker_socket,
+                &runtime_name(id),
+                "tail=80",
+                1024 * 1024,
+            )
+            .await
+            {
+                Ok(bytes) => manager_core::lifecycle::explain_exit(&engine::console_lines(&bytes)),
+                Err(_) => None,
+            };
             let _ = self
-                .update(id, |record| match on_unexpected_exit(&mut record.restarts, current) {
-                    CrashDecision::Restart { delay_secs } => {
-                        record.pending_restart_at = Some(current + delay_secs as i64);
-                        record.problem = Some(format!(
-                            "The server stopped unexpectedly (exit code {code}); restarting in {delay_secs} seconds"
-                        ));
-                    }
-                    CrashDecision::GiveUp => {
+                .update(id, |record| {
+                    if let Some(cause) = cause.as_ref().filter(|c| c.permanent) {
                         record.desired_running = false;
                         record.problem = Some(format!(
-                            "The server crashed repeatedly (last exit code {code}); automatic restarts are paused until it is started manually"
+                            "The server stopped (exit code {code}). {} Automatic restarts are paused.",
+                            cause.message
                         ));
+                        return;
+                    }
+                    let reason = cause.as_ref().map_or(String::new(), |c| format!(" {}", c.message));
+                    match on_unexpected_exit(&mut record.restarts, current) {
+                        CrashDecision::Restart { delay_secs } => {
+                            record.pending_restart_at = Some(current + delay_secs as i64);
+                            record.problem = Some(format!(
+                                "The server stopped unexpectedly (exit code {code}); restarting in {delay_secs} seconds.{reason}"
+                            ));
+                        }
+                        CrashDecision::GiveUp => {
+                            record.desired_running = false;
+                            record.problem = Some(format!(
+                                "The server crashed repeatedly (last exit code {code}); automatic restarts are paused until it is started manually.{reason}"
+                            ));
+                        }
                     }
                 })
                 .await;

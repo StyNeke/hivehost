@@ -146,3 +146,29 @@ fn length_rules_and_log_settings_fail_closed_when_malformed() {
     raw["config"]["startup"] = json!(r#"{"done":"ready","userInteraction":"not a list"}"#);
     assert!(normalize_egg(&serde_json::to_vec(&raw).unwrap()).is_err());
 }
+
+#[test]
+fn pinned_vanilla_forge_and_neoforge_eggs_normalize() {
+    for (bytes, name) in [
+        (
+            &include_bytes!("../../../tests/fixtures/eggs/vanilla.json")[..],
+            "Vanilla Minecraft",
+        ),
+        (
+            &include_bytes!("../../../tests/fixtures/eggs/forge.json")[..],
+            "Forge Enhanced",
+        ),
+        (
+            &include_bytes!("../../../tests/fixtures/eggs/neoforge.json")[..],
+            "NeoForge",
+        ),
+    ] {
+        let egg = normalize_egg(bytes).unwrap_or_else(|issues| panic!("{name}: {issues:?}"));
+        assert_eq!(egg.name, name);
+        assert!(!egg.installer.script.is_empty());
+        for variable in &egg.variables {
+            validate_variable(variable, &variable.default_value)
+                .unwrap_or_else(|e| panic!("{name} {}: {e}", variable.env_variable));
+        }
+    }
+}

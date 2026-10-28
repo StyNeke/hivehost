@@ -37,3 +37,27 @@ fn old_crashes_leave_the_window_and_clock_skew_cannot_grow_history() {
     assert_eq!(on_unexpected_exit(&mut history, 100), CrashDecision::GiveUp);
     assert!(history.len() <= MAX_RESTARTS as usize + 1);
 }
+
+#[test]
+fn known_exit_causes_are_explained_and_deterministic_ones_are_not_retried() {
+    use manager_core::lifecycle::explain_exit;
+    let lines = |text: &str| text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let java = explain_exit(&lines(
+        "Starting\nCaused by: java.lang.UnsupportedClassVersionError: net/minecraft/bundler/Main has been compiled by a more recent version of the Java Runtime (class file version 69.0), this version of the Java Runtime only recognizes class file versions up to 65.0\n\tat x",
+    ))
+    .unwrap();
+    assert!(java.permanent);
+    assert!(java.message.contains("Java 25"), "{}", java.message);
+    assert!(
+        explain_exit(&lines("**** FAILED TO BIND TO PORT!"))
+            .unwrap()
+            .permanent
+    );
+    let memory = explain_exit(&lines(
+        "Exception in thread \"main\" java.lang.OutOfMemoryError: Java heap space",
+    ))
+    .unwrap();
+    assert!(!memory.permanent);
+    assert_eq!(explain_exit(&lines("[Server] Stopping server\nexit")), None);
+    assert_eq!(explain_exit(&[]), None);
+}
