@@ -98,6 +98,25 @@ NOPASSWD sudo drop-in the user created (`/etc/sudoers.d/90-claude-temp`; remove 
     The first-install path (questions, CA, env files) is the same sequence as the manual
     deployment but has not been run end to end on a clean host.
 
+14. **Repository made public** (user request, through GitHub settings in the browser pane, signed
+    in by the user). Before that every commit's author was rewritten to the GitHub no-reply
+    address and all branches were force-pushed (see the commit IDs above, which are the new ones).
+15. **Clean reinstall with the public one-liner** (user request). First everything HiveHost had
+    put on the server was removed: units, binaries, `/etc/hivehost` (CA), `/var/lib/hivehost*`,
+    build caches, `~/hivehost-*`, the old `~/game-manager-check.*`, the `hivehost-api` user, the
+    `gm-games` network and the `GM-ISOLATE-*` chains. `iptables -S` and `ip6tables -S` were then
+    byte-identical to the snapshot taken before the very first install. Then
+    `curl -fsSL https://raw.githubusercontent.com/StyNeke/hivehost/claude/debian-host-qualification/install.sh | sudo HIVEHOST_REF=claude/debian-host-qualification bash`
+    ran as a **fresh install** (answers: detected IP `100.116.183.201`, port 8443,
+    `stijnpikkert-altai.nord`, administrator skipped): rustup auto-installed the pinned 1.99.0,
+    release build 1m15s, web build, new name-constrained CA (SHA-256
+    `E1:23:8D:24:…:AA:6B`), exit 0. Verified: three units active and enabled; env files and keys
+    0600 root; nginx listens only on `100.116.183.201:8443`; certificate SAN IP + DNS; HiveHost
+    page over verified TLS by IP and by name (`/api/session` 401); `GM-ISOLATE-FWD` jump ahead of
+    the unchanged TCPShield jumps; system nginx, Wings and the running legacy game unaffected.
+    `install.sh` is not on `main` yet, so the README's `main` one-liner does not work until the
+    branch is merged.
+
 **Next (waiting on the user):**
 - Create the administrator: `init-admin` reads the password from a hidden prompt, and Claude may
   not choose or type account passwords.
