@@ -387,6 +387,32 @@ pub fn router_with_services(
             get(server_routes::backups::retained),
         )
         .route(
+            "/api/servers/{id}/files",
+            get(server_routes::files::list).delete(server_routes::files::remove),
+        )
+        .route(
+            "/api/servers/{id}/files/text",
+            get(server_routes::files::read_text)
+                .put(server_routes::files::save_text)
+                .layer(DefaultBodyLimit::max(4 * 1024 * 1024)),
+        )
+        .route(
+            "/api/servers/{id}/files/download",
+            get(server_routes::files::download),
+        )
+        .route(
+            "/api/servers/{id}/files/upload",
+            post(server_routes::files::upload).layer(DefaultBodyLimit::max(4 * 1024 * 1024 * 1024)),
+        )
+        .route(
+            "/api/servers/{id}/files/folder",
+            post(server_routes::files::create_folder),
+        )
+        .route(
+            "/api/servers/{id}/files/rename",
+            post(server_routes::files::rename),
+        )
+        .route(
             "/api/eggs/revisions/{id}/qualification",
             post(server_routes::qualify_revision),
         )

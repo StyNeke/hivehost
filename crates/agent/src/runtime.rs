@@ -31,6 +31,8 @@ use uuid::Uuid;
 
 #[path = "runtime_backups.rs"]
 mod backup_operations;
+#[path = "runtime_files.rs"]
+mod file_operations;
 
 pub const SERVER_LABEL: &str = "dev.game-manager.server";
 pub const INSTALL_LABEL: &str = "dev.game-manager.install";
@@ -557,7 +559,9 @@ impl Runtime {
         }
         drop(records);
         self.clean_partial_backups()?;
-        self.recover_restores().await
+        self.recover_restores().await?;
+        self.clean_uploads().await;
+        Ok(())
     }
 
     pub async fn owned_ids(&self) -> std::collections::HashSet<Uuid> {

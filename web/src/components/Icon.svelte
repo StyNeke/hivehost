@@ -18,6 +18,8 @@
     puzzle: 'M10 3h4v3a2 2 0 1 0 4 0V3h3v7h-3a2 2 0 1 0 0 4h3v7h-7v-3a2 2 0 1 0-4 0v3H3v-7h3a2 2 0 1 0 0-4H3V3h7z',
     activity: 'M3 12h4l3 8 4-16 3 8h4',
     archive: 'M3 4h18v4H3z M5 8v12h14V8 M10 12h4',
+    folder: 'M3 6h6l2 2h10v11H3z',
+    file: 'M6 3h8l4 4v14H6z M14 3v4h4',
   };
   let { name, size = 18 }: { name: keyof typeof paths; size?: number } = $props();
 </script>

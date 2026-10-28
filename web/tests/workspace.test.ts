@@ -108,3 +108,36 @@ test('backups can be created, restored only when stopped, and kept when deleting
   await user.click(screen.getByRole('button', { name: 'Delete server' }));
   await waitFor(() => expect(calls.some(c => c.method === 'DELETE' && c.body.keep_backups === true)).toBe(true));
 });
+
+test('files can be browsed, edited with conflict detection, and uploaded', async () => {
+  const calls = mock({ detail: detail('running', true) });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.stubGlobal('fetch', vi.fn(async (path: string, options?: RequestInit) => {
+    const method = options?.method ?? 'GET';
+    if (path === '/api/servers/s1/files?path=') return Response.json([{ name: 'config', kind: 'directory', size: 0, modified: 0 }, { name: 'server.properties', kind: 'file', size: 20, modified: 0 }, { name: 'link', kind: 'link', size: 0, modified: 0 }]);
+    if (path === '/api/servers/s1/files?path=config') return Response.json([]);
+    if (path.startsWith('/api/servers/s1/files/text?path=server.properties')) return Response.json({ text: 'motd=hi\n', version: 'v1' });
+    if (path === '/api/servers/s1/files/text' && method === 'PUT') {
+      calls.push({ path, method, body: JSON.parse(String(options!.body)) });
+      return Response.json({ code: 'conflict', message: 'the file changed since it was opened; reload it before saving' }, { status: 409 });
+    }
+    if (path.startsWith('/api/servers/s1/files/upload')) { calls.push({ path, method, body: null }); return new Response(null, { status: 201 }); }
+    return original(path, options);
+  }));
+  render(ServerWorkspace, { serverId: 's1', onBack: () => {}, onDeleted: () => {} });
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('tab', { name: /Files/ }));
+  expect((await screen.findByRole('button', { name: 'link (link, not followed)' }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'Open server.properties' }));
+  const editor = await screen.findByLabelText('Contents of server.properties');
+  await user.clear(editor);
+  await user.type(editor, 'motd=new');
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await screen.findByText(/changed since it was opened/);
+  expect(calls.find(c => c.method === 'PUT')!.body).toEqual({ path: 'server.properties', text: 'motd=new', version: 'v1' });
+  await user.click(screen.getByRole('button', { name: 'Close' }));
+  await user.click(await screen.findByRole('button', { name: 'Open folder config' }));
+  await screen.findByText('This folder is empty.');
+  await user.upload(screen.getByLabelText('Upload'), new File(['data'], 'notes.txt'));
+  await waitFor(() => expect(calls.some(c => c.path === '/api/servers/s1/files/upload?path=config%2Fnotes.txt')).toBe(true));
+});

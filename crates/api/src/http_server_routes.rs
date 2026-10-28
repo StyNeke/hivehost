@@ -22,6 +22,8 @@ use uuid::Uuid;
 
 #[path = "http_backup_routes.rs"]
 pub(super) mod backups;
+#[path = "http_file_routes.rs"]
+pub(super) mod files;
 
 fn runtime_error(err: RuntimeError) -> ApiError {
     match err {

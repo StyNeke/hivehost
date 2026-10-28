@@ -139,6 +139,18 @@ main { flex: 1; padding: 0 32px; }
 .danger-panel .checkbox { display: flex; align-items: center; gap: 8px; color: #c9c9c9; }
 .retained { margin-top: 36px; }
 .retained h2 { margin-bottom: 4px; }
+.files-toolbar, .editor-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: #777; }
+.crumbs .link-button { margin: 0; font-size: 12px; color: #b5b5b5; }
+.crumbs .link-button svg { display: none; }
+.upload-button { position: relative; cursor: pointer; }
+.upload-button input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+.upload-button:focus-within { outline: 2px solid #b5b5b5; outline-offset: 3px; }
+.file-name { display: flex; align-items: center; gap: 10px; background: none; border: 0; color: inherit; text-align: left; padding: 0; min-width: 0; flex: 1; }
+.file-name:disabled { cursor: default; }
+.file-name span { min-width: 0; }
+.file-name strong { overflow-wrap: anywhere; }
+.editor { width: 100%; min-height: 420px; background: #111; color: #ddd; border: 1px solid #333; border-radius: 8px; padding: 14px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize: vertical; }
 .import-panel { display: flex; justify-content: space-between; align-items: center; gap: 25px; margin-bottom: 28px; }
 .file-picker { display: block; font-size: 11px; color: #b0b0b0; margin: 18px 0 8px; }
 input[type='file'] { width: 100%; max-width: 400px; font-size: 11px; color: #999; }

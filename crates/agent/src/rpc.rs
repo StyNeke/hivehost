@@ -105,6 +105,14 @@ async fn runtime_operation(
             server_id,
             backup_id,
         } => runtime.delete_backup(server_id, backup_id).await,
+        operation @ (Operation::ListDirectory { .. }
+        | Operation::ReadText { .. }
+        | Operation::WriteText { .. }
+        | Operation::ReadChunk { .. }
+        | Operation::WriteChunk { .. }
+        | Operation::CreateDirectory { .. }
+        | Operation::RenamePath { .. }
+        | Operation::DeletePath { .. }) => runtime.file_operation(operation).await,
         Operation::Ping | Operation::InspectHost => AgentResult::Unavailable,
     }
 }

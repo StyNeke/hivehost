@@ -4,6 +4,8 @@ pub mod commands;
 pub mod docker;
 pub mod engine;
 #[cfg(target_os = "linux")]
+pub mod file_manager;
+#[cfg(target_os = "linux")]
 pub mod files;
 pub mod host;
 #[cfg(target_os = "linux")]

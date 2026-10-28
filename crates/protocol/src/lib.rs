@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub const VERSION: u16 = 1;
-pub const MAX_FRAME_BYTES: usize = 65536;
+// Large enough for a base64-encoded 1 MiB file chunk; still bounded on both sides.
+pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_CONSOLE_LINES: u16 = 500;
 pub const MAX_COMMAND_BYTES: usize = 512;
 
@@ -113,6 +114,66 @@ pub enum Operation {
         server_id: Uuid,
         backup_id: Uuid,
     },
+    ListDirectory {
+        server_id: Uuid,
+        path: String,
+    },
+    ReadText {
+        server_id: Uuid,
+        path: String,
+    },
+    WriteText {
+        server_id: Uuid,
+        path: String,
+        text: String,
+        // The version that was read; None creates a new file and never overwrites.
+        expected_version: Option<String>,
+    },
+    ReadChunk {
+        server_id: Uuid,
+        path: String,
+        offset: u64,
+        length: u32,
+    },
+    WriteChunk {
+        server_id: Uuid,
+        upload_id: Uuid,
+        path: String,
+        offset: u64,
+        // Base64-encoded bytes.
+        data: String,
+        last: bool,
+    },
+    CreateDirectory {
+        server_id: Uuid,
+        path: String,
+    },
+    RenamePath {
+        server_id: Uuid,
+        from: String,
+        to: String,
+    },
+    DeletePath {
+        server_id: Uuid,
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileKind {
+    File,
+    Directory,
+    Link,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileEntry {
+    pub name: String,
+    pub kind: FileKind,
+    pub size: u64,
+    pub modified: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,4 +275,8 @@ pub enum AgentResult {
     Console(Vec<String>),
     Files(Vec<String>),
     Backups(Vec<BackupInfo>),
+    Directory(Vec<FileEntry>),
+    Text { text: String, version: String },
+    Saved { version: String },
+    Chunk { data: String, size: u64 },
 }

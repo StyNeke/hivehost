@@ -59,6 +59,8 @@ struct FakeAgent {
     servers: HashMap<Uuid, FakeServer>,
     fail_next_install: bool,
     backup_root: std::path::PathBuf,
+    // File operations run against the agent's real implementation on this directory.
+    volume_root: std::path::PathBuf,
     backups: HashMap<Uuid, Vec<BackupInfo>>,
     retention: HashMap<Uuid, u8>,
 }
@@ -82,6 +84,73 @@ fn rejection(code: &str, message: &str) -> AgentResult {
 }
 
 impl FakeAgent {
+    fn files(&mut self, operation: Operation) -> AgentResult {
+        use base64::Engine;
+        use manager_agent::file_manager::{Volume, validate};
+        let engine = base64::engine::general_purpose::STANDARD;
+        std::fs::create_dir_all(&self.volume_root).unwrap();
+        let volume = Volume::open(&self.volume_root).unwrap();
+        let reject = |error: std::io::Error| {
+            let code = match error.kind() {
+                std::io::ErrorKind::NotFound => "not_found",
+                std::io::ErrorKind::AlreadyExists => "conflict",
+                std::io::ErrorKind::InvalidInput => "invalid_path",
+                _ => "files",
+            };
+            rejection(code, &error.to_string())
+        };
+        let result = match operation {
+            Operation::ListDirectory { path, .. } => validate(&path, true)
+                .and_then(|p| volume.list(&p))
+                .map(AgentResult::Directory),
+            Operation::ReadText { path, .. } => validate(&path, false)
+                .and_then(|p| volume.read_text(&p))
+                .map(|(text, version)| AgentResult::Text { text, version }),
+            Operation::WriteText {
+                path,
+                text,
+                expected_version,
+                ..
+            } => validate(&path, false)
+                .and_then(|p| volume.write_text(&p, &text, expected_version.as_deref()))
+                .map(|version| AgentResult::Saved { version }),
+            Operation::ReadChunk {
+                path,
+                offset,
+                length,
+                ..
+            } => validate(&path, false)
+                .and_then(|p| volume.read_chunk(&p, offset, length as usize))
+                .map(|(bytes, size)| AgentResult::Chunk {
+                    data: engine.encode(bytes),
+                    size,
+                }),
+            Operation::WriteChunk {
+                upload_id,
+                path,
+                offset,
+                data,
+                last,
+                ..
+            } => validate(&path, false)
+                .and_then(|p| {
+                    volume.write_chunk(upload_id, &p, offset, &engine.decode(data).unwrap(), last)
+                })
+                .map(|_| AgentResult::Accepted),
+            Operation::CreateDirectory { path, .. } => validate(&path, false)
+                .and_then(|p| volume.create_directory(&p))
+                .map(|_| AgentResult::Accepted),
+            Operation::RenamePath { from, to, .. } => validate(&from, false)
+                .and_then(|from| validate(&to, false).and_then(|to| volume.rename(&from, &to)))
+                .map(|_| AgentResult::Accepted),
+            Operation::DeletePath { path, .. } => validate(&path, false)
+                .and_then(|p| volume.delete(&p))
+                .map(|_| AgentResult::Accepted),
+            _ => unreachable!(),
+        };
+        result.unwrap_or_else(reject)
+    }
+
     // Operations complete instantly; each status read after an accepted change reports success.
     fn handle(&mut self, operation: Operation) -> AgentResult {
         match operation {
@@ -256,6 +325,14 @@ impl FakeAgent {
                     .map(|s| s.files.clone())
                     .unwrap_or_default(),
             ),
+            operation @ (Operation::ListDirectory { .. }
+            | Operation::ReadText { .. }
+            | Operation::WriteText { .. }
+            | Operation::ReadChunk { .. }
+            | Operation::WriteChunk { .. }
+            | Operation::CreateDirectory { .. }
+            | Operation::RenamePath { .. }
+            | Operation::DeletePath { .. }) => self.files(operation),
             Operation::CreateBackup {
                 server_id,
                 retention,
@@ -531,6 +608,7 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
     let backup_root = dir.path().join("backups");
     let fake = Arc::new(Mutex::new(FakeAgent {
         backup_root: backup_root.clone(),
+        volume_root: dir.path().join("volume"),
         ..Default::default()
     }));
     let socket = dir.path().join("agent.sock");
@@ -955,6 +1033,182 @@ async fn servers_install_run_take_mods_and_delete_through_the_api() {
         d["details"]["install_state"] == "installed"
     })
     .await;
+
+    // File manager: edits detect conflicts, uploads and downloads stream in chunks.
+    let files = format!("{server}/files");
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            &format!("{files}/folder"),
+            owner,
+            Some(json!({"path": "config"}))
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    let (code, saved) = send(
+        &app,
+        "PUT",
+        &format!("{files}/text"),
+        owner,
+        Some(json!({"path": "config/motd.txt", "text": "hello", "version": null})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK);
+    let opened = send(
+        &app,
+        "GET",
+        &format!("{files}/text?path=config/motd.txt"),
+        owner,
+        None,
+    )
+    .await
+    .1;
+    assert_eq!(
+        (opened["text"].as_str(), &opened["version"]),
+        (Some("hello"), &saved["version"])
+    );
+    let (code, _) = send(
+        &app,
+        "PUT",
+        &format!("{files}/text"),
+        owner,
+        Some(json!({"path": "config/motd.txt", "text": "new", "version": "0".repeat(64)})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CONFLICT, "stale version is refused");
+    let (code, _) = send(
+        &app,
+        "PUT",
+        &format!("{files}/text"),
+        owner,
+        Some(json!({"path": "config/motd.txt", "text": "new", "version": null})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CONFLICT, "creating never overwrites");
+    let payload: Vec<u8> = (0..(3 * 1024 * 1024 + 12345))
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let uploaded = app
+        .clone()
+        .oneshot(
+            Request::post(format!("{files}/upload?path=config/world.bin"))
+                .header("cookie", owner)
+                .header("origin", ORIGIN)
+                .body(Body::from(payload.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(uploaded.status(), StatusCode::CREATED);
+    let downloaded = app
+        .clone()
+        .oneshot(
+            Request::get(format!("{files}/download?path=config/world.bin"))
+                .header("cookie", owner)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        downloaded.headers()["content-length"],
+        payload.len().to_string()
+    );
+    assert_eq!(
+        downloaded.headers()["content-disposition"],
+        "attachment; filename=\"world.bin\""
+    );
+    assert_eq!(
+        to_bytes(downloaded.into_body(), payload.len() + 1)
+            .await
+            .unwrap()
+            .to_vec(),
+        payload
+    );
+    let empty = app
+        .clone()
+        .oneshot(
+            Request::post(format!("{files}/upload?path=config/empty.txt"))
+                .header("cookie", owner)
+                .header("origin", ORIGIN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::CREATED);
+    let listing = send(&app, "GET", &format!("{files}?path=config"), owner, None)
+        .await
+        .1;
+    let names: Vec<_> = listing
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["empty.txt", "motd.txt", "world.bin"]);
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            &format!("{files}/rename"),
+            owner,
+            Some(json!({"from": "config/motd.txt", "to": "config/world.bin"}))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            &format!("{files}/rename"),
+            owner,
+            Some(json!({"from": "config/motd.txt", "to": "motd.txt"}))
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    for bad in ["../outside", "config/../../x"] {
+        let code = send(&app, "GET", &format!("{files}/text?path={bad}"), owner, None).await.0;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    // A leading slash means the server's own root, never the host's.
+    let (code, body) = send(&app, "GET", &format!("{files}/text?path=/etc/passwd"), owner, None).await;
+    assert_eq!(code, StatusCode::NOT_FOUND);
+    assert!(!body.to_string().contains("root:x:0:0"));
+    assert_eq!(
+        send(&app, "GET", &format!("{files}?path=config"), outsider, None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&app, "DELETE", &format!("{files}?path=config"), owner, None)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&app, "GET", &format!("{files}?path=config"), owner, None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let activity = send(&app, "GET", &format!("{server}/activity"), owner, None)
+        .await
+        .1
+        .to_string();
+    assert!(
+        activity.contains("upload_file")
+            && activity.contains("edit_file")
+            && activity.contains("delete_file")
+    );
 
     // Backups: retention lowering and restores need confirmation; downloads stream and stop
     // when access is revoked midway.

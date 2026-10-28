@@ -21,12 +21,17 @@
   type Extensions = { game: Runtime['game']; available: boolean; reason: string | null; managed: Extension[]; other_files: string[] };
   type Hit = { project_id: string; title: string; description: string; downloads: number };
   type Activity = { at: number; actor: string | null; action: string; outcome: string; detail: string | null };
+  type FileEntry = { name: string; kind: 'file' | 'directory' | 'link' | 'other'; size: number; modified: number };
   type Backup = { id: string; kind: 'manual' | 'pre_restore'; created_at: number; size_bytes: number };
 
   let { serverId, onBack, onDeleted }: { serverId: string; onBack: () => void; onDeleted: (name: string) => void } = $props();
 
   let detail = $state<Detail | null>(null);
-  let tab = $state<'console' | 'mods' | 'backups' | 'activity' | 'settings'>('console');
+  let tab = $state<'console' | 'files' | 'mods' | 'backups' | 'activity' | 'settings'>('console');
+  let folder = $state('');
+  let entries = $state<FileEntry[]>([]);
+  let editing = $state<{ path: string; text: string; version: string | null } | null>(null);
+  let uploadInput = $state<HTMLInputElement | undefined>();
   let backups = $state<Backup[]>([]);
   let retention = $state(3);
   let keepBackups = $state(false);
@@ -170,9 +175,63 @@
   });
   function size(bytes: number) { return bytes >= 1024 ** 3 ? gib(bytes) : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MiB`; }
 
+  const join = (name: string) => (folder ? `${folder}/${name}` : name);
+  async function loadFolder(path = folder) {
+    try { entries = await api<FileEntry[]>(`/api/servers/${serverId}/files?path=${encodeURIComponent(path)}`); folder = path; editing = null; }
+    catch (reason) { report(reason); }
+  }
+  const openEntry = (entry: FileEntry) => act(async () => {
+    if (entry.kind === 'directory') { await loadFolder(join(entry.name)); return; }
+    if (entry.kind !== 'file') return;
+    const file = await api<{ text: string; version: string }>(`/api/servers/${serverId}/files/text?path=${encodeURIComponent(join(entry.name))}`);
+    editing = { path: join(entry.name), text: file.text, version: file.version };
+  });
+  const saveFile = () => act(async () => {
+    if (!editing) return;
+    const saved = await api<{ version: string }>(`/api/servers/${serverId}/files/text`, { method: 'PUT', body: JSON.stringify({ path: editing.path, text: editing.text, version: editing.version }) });
+    editing = { ...editing, version: saved.version };
+    notice = `Saved ${editing.path}.`;
+  });
+  const newFile = () => act(async () => {
+    const name = prompt('New file name');
+    if (!name) return;
+    editing = { path: join(name.trim()), text: '', version: null };
+  });
+  const newFolder = () => act(async () => {
+    const name = prompt('New folder name');
+    if (!name) return;
+    await api(`/api/servers/${serverId}/files/folder`, { method: 'POST', body: JSON.stringify({ path: join(name.trim()) }) });
+    await loadFolder();
+  });
+  const renameEntry = (entry: FileEntry) => act(async () => {
+    const name = prompt(`Rename ${entry.name} to`, entry.name);
+    if (!name || name === entry.name) return;
+    await api(`/api/servers/${serverId}/files/rename`, { method: 'POST', body: JSON.stringify({ from: join(entry.name), to: join(name.trim()) }) });
+    await loadFolder();
+  });
+  const deleteEntry = (entry: FileEntry) => act(async () => {
+    if (!confirm(`Delete ${entry.name}${entry.kind === 'directory' ? ' and everything in it' : ''}? This cannot be undone.`)) return;
+    await api(`/api/servers/${serverId}/files?path=${encodeURIComponent(join(entry.name))}`, { method: 'DELETE' });
+    await loadFolder();
+  });
+  const uploadFiles = (list: FileList | null) => act(async () => {
+    for (const file of Array.from(list ?? [])) {
+      const response = await fetch(`/api/servers/${serverId}/files/upload?path=${encodeURIComponent(join(file.name))}`, { method: 'POST', body: file, credentials: 'same-origin' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new ApiError(response.status, body?.message ?? `Upload of ${file.name} failed`);
+      }
+    }
+    notice = 'Upload finished.';
+    if (uploadInput) uploadInput.value = '';
+    await loadFolder();
+  });
+  const crumbs = $derived(folder ? folder.split('/').map((name, index, parts) => ({ name, path: parts.slice(0, index + 1).join('/') })) : []);
+
   function open(next: typeof tab) {
     tab = next; error = ''; notice = '';
     if (next === 'mods') void loadExtensions();
+    if (next === 'files') void loadFolder('');
     if (next === 'backups') void loadBackups();
     if (next === 'activity') void loadActivity();
   }
@@ -226,6 +285,7 @@
 
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected={tab === 'console'} class:active={tab === 'console'} onclick={() => open('console')}><Icon name="terminal" size={15} /> Console</button>
+      <button role="tab" aria-selected={tab === 'files'} class:active={tab === 'files'} disabled={!installed} onclick={() => open('files')}><Icon name="folder" size={15} /> Files</button>
       <button role="tab" aria-selected={tab === 'mods'} class:active={tab === 'mods'} disabled={!installed} onclick={() => open('mods')}><Icon name="puzzle" size={15} /> Mods</button>
       <button role="tab" aria-selected={tab === 'backups'} class:active={tab === 'backups'} disabled={!installed} onclick={() => open('backups')}><Icon name="archive" size={15} /> Backups</button>
       <button role="tab" aria-selected={tab === 'activity'} class:active={tab === 'activity'} onclick={() => open('activity')}><Icon name="activity" size={15} /> Activity</button>
@@ -244,6 +304,39 @@
           <input aria-label="Console command" placeholder={power === 'offline' ? 'Start the server to send commands' : 'Type a command, e.g. list'} bind:value={command} maxlength="512" disabled={power === 'offline' || power === 'stopping'} autocomplete="off" />
           <button class="secondary" disabled={!command.trim() || power === 'offline' || power === 'stopping'}>Send</button>
         </form>
+      </section>
+    {:else if tab === 'files'}
+      <section class="panel files-panel" aria-label="Files">
+        {#if editing}
+          <div class="editor-heading"><h2>{editing.path}</h2>
+            <div class="row-actions"><button class="secondary" onclick={() => { editing = null; }}>Close</button><button class="primary" disabled={busy} onclick={saveFile}>Save</button></div></div>
+          <textarea class="editor" aria-label={`Contents of ${editing.path}`} bind:value={editing.text} spellcheck="false"></textarea>
+          <p class="muted">Changes apply when the server next reads the file; most settings need a restart.</p>
+        {:else}
+          <div class="files-toolbar">
+            <nav class="crumbs" aria-label="Folder"><button class="link-button" onclick={() => loadFolder('')}>Server files</button>{#each crumbs as crumb (crumb.path)}<span>/</span><button class="link-button" onclick={() => loadFolder(crumb.path)}>{crumb.name}</button>{/each}</nav>
+            <div class="row-actions">
+              <button class="secondary" disabled={busy} onclick={newFile}>New file</button>
+              <button class="secondary" disabled={busy} onclick={newFolder}>New folder</button>
+              <label class="secondary upload-button">Upload<input bind:this={uploadInput} type="file" multiple onchange={(event) => uploadFiles(event.currentTarget.files)} /></label>
+            </div>
+          </div>
+          {#if !entries.length}<p class="muted">This folder is empty.</p>{/if}
+          <ul class="mod-list file-list">
+            {#each entries as entry (entry.name)}
+              <li>
+                <button class="file-name" aria-label={entry.kind === 'directory' ? `Open folder ${entry.name}` : entry.kind === 'file' ? `Open ${entry.name}` : `${entry.name} (link, not followed)`} disabled={entry.kind !== 'file' && entry.kind !== 'directory'} onclick={() => openEntry(entry)}>
+                  <Icon name={entry.kind === 'directory' ? 'folder' : 'file'} size={15} /><span><strong>{entry.name}</strong><small>{entry.kind === 'directory' ? 'Folder' : entry.kind === 'file' ? size(entry.size) : 'Link (not followed)'}</small></span>
+                </button>
+                <div class="row-actions">
+                  {#if entry.kind === 'file'}<a class="secondary" href={`/api/servers/${serverId}/files/download?path=${encodeURIComponent(join(entry.name))}`} download aria-label={`Download ${entry.name}`}>Download</a>{/if}
+                  <button class="secondary" aria-label={`Rename ${entry.name}`} disabled={busy} onclick={() => renameEntry(entry)}>Rename</button>
+                  <button class="secondary danger" aria-label={`Delete ${entry.name}`} disabled={busy} onclick={() => deleteEntry(entry)}>Delete</button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </section>
     {:else if tab === 'mods'}
       <section class="panel mods-panel">

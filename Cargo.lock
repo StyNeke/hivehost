@@ -763,12 +763,14 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 name = "manager-agent"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "flate2",
  "futures-util",
  "libc",
  "manager-core",
  "manager-protocol",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
@@ -785,7 +787,9 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
+ "base64 0.22.1",
  "futures-util",
+ "manager-agent",
  "manager-core",
  "manager-protocol",
  "reqwest",
